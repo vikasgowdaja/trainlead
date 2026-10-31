@@ -231,6 +231,26 @@ The Android WebView smoke test checks the actual native IPC, demo cluster cards,
 repeat/search filters, local capture and mobile width; it writes a generated
 screenshot to app/.smoke/android-light.png. Browser checks cover consent and themes.
 
+## Vendor And Trainer Onboarding (in the app)
+
+The **Vendors** and **Trainers** tabs keep a local directory in `directory.db` in
+the app data folder. Profiles move Draft -> Submitted -> Active/Verified or Rejected
+(rejection needs a reason; editing a rejected profile returns it to Draft).
+
+- Vendor: legal/display name, GSTIN (checked against PAN), PAN, address, PIN, website,
+  contact person, WhatsApp numbers, domains. Required: company, contact, domains.
+- Trainer: profile, languages, experience, day rate range, travel, modes, bio, skills
+  (proficiency 1-5, years, last used, trainings delivered, evidence link), blocked
+  dates. Required: profile, day rate, at least one skill, a resume document.
+- Documents: PDF/PNG/JPEG up to 2 MB, checked by content, with optional expiry
+  (expired certificates are flagged). Stored unencrypted in `documents/`.
+- Only the reviewer can mark a skill verified; edits keep the reviewer's decision.
+- "Seen in your WhatsApp requirements" suggests vendors from captured leads, matched
+  by phone, and the vendor card counts its WhatsApp postings.
+
+Limits: this is single-user and on-device; the phone owner acts as reviewer. Self
+sign-up for other vendors/trainers needs the M8 server and accounts.
+
 ## Ecosystem Layer (E1-E8)
 
 One real-world training need is one **Opportunity**; every vendor, WhatsApp group or
