@@ -21,6 +21,9 @@ async-trait.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 dotenvy = "0.15"
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
 
 [lints]
 workspace = true

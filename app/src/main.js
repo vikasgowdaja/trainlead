@@ -1,12 +1,15 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createIcons, Sun, Moon, Search, Upload, Inbox, Layers,
   FlaskConical, Save, MapPin, CalendarDays, Phone, MessageCircle, Check, Minus,
-  CircleHelp, ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight, KeyRound, RotateCw } from 'lucide';
+  CircleHelp, ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight, KeyRound, RotateCw, Building2, GraduationCap, Plus,
+  CircleCheck, Circle, FileText, Trash2, BadgeCheck, X, Send, TriangleAlert, UserPlus, Pencil } from 'lucide';
+import { createDirectory } from './directory.js';
 import './style.css';
 
 const icons = { Sun, Moon, Search, Upload, Inbox, Layers, FlaskConical,
   Save, MapPin, CalendarDays, Phone, MessageCircle, Check, Minus, CircleHelp,
-  ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight, KeyRound, RotateCw };
+  ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight, KeyRound, RotateCw, Building2, GraduationCap, Plus,
+  CircleCheck, Circle, FileText, Trash2, BadgeCheck, X, Send, TriangleAlert, UserPlus, Pencil };
 const state = { leads: [], reviews: [], tab: 'leads', busy: false };
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -43,6 +46,8 @@ document.querySelector('#app').innerHTML = `
       <nav class="tabs" aria-label="Workspace views">
         <button id="tab-leads" aria-pressed="true">${icon('layers')} Requirements <span id="lead-count">0</span></button>
         <button id="tab-inbox" aria-pressed="false">${icon('inbox')} Inbox <span id="inbox-count">0</span></button>
+        <button id="tab-vendors" aria-pressed="false">${icon('building-2')} Vendors <span id="vendor-count">0</span></button>
+        <button id="tab-trainers" aria-pressed="false">${icon('graduation-cap')} Trainers <span id="trainer-count">0</span></button>
         <button id="refresh" class="icon-button" title="Refresh workspace" aria-label="Refresh workspace">${icon('refresh-cw')}</button>
       </nav>
       <div class="view-heading"><div><span class="eyebrow" id="view-label">YOUR OPPORTUNITIES</span><h2 id="view-title">Requirements</h2></div>
@@ -82,6 +87,7 @@ document.querySelector('#app').innerHTML = `
 `;
 
 function refreshIcons() { createIcons({ icons, attrs: { 'stroke-width': 1.7 } }); }
+const directory = createDirectory({ invoke, escape, icon, refreshIcons, announce });
 function announce(message, error = false) {
   const status = document.querySelector('#status');
   status.textContent = message;
@@ -129,15 +135,28 @@ function render() {
   const search = document.querySelector('#search').value.trim().toLowerCase();
   const repeated = document.querySelector('#repeated').checked;
   const inbox = state.tab === 'inbox';
+  const people = state.tab === 'vendors' || state.tab === 'trainers' ? state.tab.slice(0, -1) : null;
+  const counts = directory.counts();
   document.querySelector('#lead-count').textContent = state.leads.length;
   document.querySelector('#inbox-count').textContent = state.reviews.length;
-  document.querySelector('#tab-leads').setAttribute('aria-pressed', String(!inbox));
-  document.querySelector('#tab-inbox').setAttribute('aria-pressed', String(inbox));
+  document.querySelector('#vendor-count').textContent = counts.vendors;
+  document.querySelector('#trainer-count').textContent = counts.trainers;
+  for (const tab of ['leads', 'inbox', 'vendors', 'trainers']) {
+    document.querySelector(`#tab-${tab}`).setAttribute('aria-pressed', String(state.tab === tab));
+  }
+  document.querySelector('#repeat-control').hidden = inbox || Boolean(people);
+  document.querySelector('#sort-control').hidden = inbox || Boolean(people);
+  document.querySelector('#retry-all').hidden = !inbox || !state.reviews.length;
+  if (people) {
+    document.querySelector('#view-title').textContent = people === 'vendor' ? 'Vendor onboarding' : 'Trainer onboarding';
+    document.querySelector('#view-label').textContent = people === 'vendor' ? 'TRAINING COMPANIES' : 'TRAINER NETWORK';
+    const shown = directory.render(people, document.querySelector('#leads'), search);
+    document.querySelector('#result-count').textContent = `${shown} ${people}s`;
+    refreshIcons();
+    return;
+  }
   document.querySelector('#view-title').textContent = inbox ? 'Review inbox' : 'Requirements';
   document.querySelector('#view-label').textContent = inbox ? 'AWAITING EXTRACTION' : 'YOUR OPPORTUNITIES';
-  document.querySelector('#repeat-control').hidden = inbox;
-  document.querySelector('#sort-control').hidden = inbox;
-  document.querySelector('#retry-all').hidden = !inbox || !state.reviews.length;
   let entries;
   if (inbox) {
     entries = state.reviews.filter(entry => JSON.stringify(entry.message).toLowerCase().includes(search));
@@ -158,7 +177,7 @@ async function reload() {
     render();
     return;
   }
-  [state.leads, state.reviews, state.extraction] = await Promise.all([invoke('list_leads'), invoke('list_reviews'), invoke('extraction_status')]);
+  [state.leads, state.reviews, state.extraction] = await Promise.all([invoke('list_leads'), invoke('list_reviews'), invoke('extraction_status'), directory.load()]);
   const note = document.querySelector('#extraction-note');
   note.textContent = state.extraction.enabled ? 'Extraction: Groq (rules as backup)' : 'Extraction: on-device rules / add Groq key';
   document.querySelector('#ai-settings').classList.toggle('enabled', state.extraction.enabled);
@@ -217,6 +236,7 @@ document.querySelector('#demo').addEventListener('click', () => action(async () 
   announce(`Demo: found ${report.found} / ${report.new} new / ${report.exact} exact / ${report.similar} similar`);
 }));
 document.querySelector('#leads').addEventListener('click', event => {
+  if (directory.handleClick(event)) return;
   if (event.target.closest('[data-demo]')) document.querySelector('#demo').click();
   const retry = event.target.closest('[data-retry]');
   if (retry) retryReview([Number(retry.dataset.retry)]);
@@ -290,6 +310,9 @@ document.querySelector('#capture-open').addEventListener('click', () => {
 document.querySelector('#refresh').addEventListener('click', () => action(async () => { await reload(); announce('Workspace refreshed'); }));
 document.querySelector('#tab-leads').addEventListener('click', () => { state.tab = 'leads'; render(); });
 document.querySelector('#tab-inbox').addEventListener('click', () => { state.tab = 'inbox'; render(); });
+document.querySelector('#tab-vendors').addEventListener('click', () => { state.tab = 'vendors'; render(); });
+document.querySelector('#tab-trainers').addEventListener('click', () => { state.tab = 'trainers'; render(); });
+directory.onClose(render);
 ['search', 'repeated', 'sort'].forEach(name => document.querySelector(`#${name}`).addEventListener('input', render));
 document.querySelector('#theme').addEventListener('click', () => {
   const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';

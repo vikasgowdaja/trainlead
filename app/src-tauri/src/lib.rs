@@ -1,3 +1,4 @@
+mod directory;
 mod service;
 
 use std::{
@@ -131,6 +132,84 @@ async fn retry_review(state: State<'_, AppState>, ids: Option<Vec<i64>>) -> Resu
     Ok(ExtractionResult { report, engine: engine.engine() })
 }
 
+#[derive(serde::Serialize)]
+struct DirectoryView {
+    vendors: Vec<directory::Record<directory::VendorProfile>>,
+    trainers: Vec<directory::Record<directory::TrainerProfile>>,
+    suggestions: Vec<directory::Suggestion>,
+}
+
+/// Runs directory work off the UI thread; `leads` is the requirements database path.
+async fn directory_task<T, F>(state: &AppState, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut directory::Directory, &Path, i64) -> trainlead_core::Result<T> + Send + 'static,
+{
+    let (root, leads) = (state.directory.clone(), state.database.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut directory = directory::Directory::open(&root.join("directory.db"), &root.join("documents"))?;
+        work(&mut directory, &leads, chrono::Utc::now().timestamp())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(message)
+}
+
+#[tauri::command]
+async fn load_directory(state: State<'_, AppState>) -> Result<DirectoryView, String> {
+    directory_task(&state, |directory, leads, _| {
+        let leads = service::open(leads)?.clusters()?;
+        Ok(DirectoryView { vendors: directory.vendors(&leads)?, trainers: directory.trainers()?, suggestions: directory.suggestions(&leads)? })
+    }).await
+}
+
+#[tauri::command]
+async fn save_vendor(state: State<'_, AppState>, id: Option<i64>, profile: directory::VendorProfile) -> Result<i64, String> {
+    directory_task(&state, move |directory, _, now| directory.save_vendor(id, profile, now)).await
+}
+
+#[tauri::command]
+async fn save_trainer(state: State<'_, AppState>, id: Option<i64>, profile: directory::TrainerProfile) -> Result<i64, String> {
+    directory_task(&state, move |directory, _, now| directory.save_trainer(id, profile, now)).await
+}
+
+#[tauri::command]
+async fn review_profile(
+    state: State<'_, AppState>,
+    kind: directory::Kind,
+    id: i64,
+    action: String,
+    reason: Option<String>,
+) -> Result<(), String> {
+    directory_task(&state, move |directory, _, now| match action.as_str() {
+        "submit" => directory.submit(kind, id, now),
+        "approve" => directory.decide(kind, id, true, None, now),
+        "reject" => directory.decide(kind, id, false, reason, now),
+        "delete" => directory.delete(kind, id),
+        _ => Err(Error::Validation("unknown review action".into())),
+    }).await
+}
+
+#[tauri::command]
+async fn verify_skill(state: State<'_, AppState>, trainer: i64, skill: String, verified: bool) -> Result<(), String> {
+    directory_task(&state, move |directory, _, now| directory.set_skill_verified(trainer, &skill, verified, now)).await
+}
+
+#[tauri::command]
+async fn add_document(
+    state: State<'_, AppState>,
+    kind: directory::Kind,
+    owner: i64,
+    document: directory::NewDocument,
+) -> Result<directory::Document, String> {
+    directory_task(&state, move |directory, _, now| directory.add_document(kind, owner, document, now)).await
+}
+
+#[tauri::command]
+async fn delete_document(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    directory_task(&state, move |directory, _, _| directory.delete_document(id)).await
+}
+
 #[tauri::command]
 async fn list_leads(state: State<'_, AppState>) -> Result<Vec<Cluster>, String> {
     let path = state.database.clone();
@@ -222,7 +301,14 @@ pub fn run() {
             extraction_status,
             save_groq_key,
             clear_groq_key,
-            retry_review
+            retry_review,
+            load_directory,
+            save_vendor,
+            save_trainer,
+            review_profile,
+            verify_skill,
+            add_document,
+            delete_document
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {
