@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/trainlead-core"]
+members = ["crates/trainlead-core", "crates/trainlead-marketplace", "crates/trainlead-server", "app/src-tauri"]
+default-members = ["crates/trainlead-core"]
 resolver = "2"
 
 [workspace.package]

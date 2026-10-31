@@ -4,3 +4,8 @@
 *.db-wal
 .env
 node_modules/
+/app/dist/
+/app/.smoke/
+/app/src-tauri/gen/android/**/build/
+**/.gradle/
+**/local.properties

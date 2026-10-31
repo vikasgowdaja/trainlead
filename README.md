@@ -10,8 +10,8 @@ Work stops for a summary and verification at each milestone.
 | --- | --- | --- |
 | M1 | Rust core: models, export parser, LLM extraction, SQLite, dedup, tests | Implemented |
 | M2 | Tokio/axum API, authenticated ingest, leads/CSV, headless CLI | Planned |
-| M3 | Tauri 2 desktop UI, filters, source controls, notify folder watcher | Planned |
-| M4 | Tauri Android, Kotlin notification plugin, ACTION_SEND share target | Planned |
+| M3 | Tauri 2 desktop UI, filters, source controls, notify folder watcher | Partial: local shell/UI |
+| M4 | Tauri Android, Kotlin notification plugin, ACTION_SEND share target | Partial: emulator APK; integrations pending |
 | M5 | Evaluate whatsapp-rust/wacore; opt-in read-only bridge; secure settings | Planned |
 | M6 | Windows/macOS/Linux installers, signed debug APK, build documentation | Planned |
 
@@ -19,7 +19,64 @@ The existing backend, desktop, web, Android, bridge, and Capacitor files are leg
 Python/Electron/Capacitor prototypes, not the new Rust app. They are retained
 unchanged and are not wired to the Rust workspace. Do not expose the legacy server
 to the LAN: it does not authenticate all ingestion endpoints.
-M1 is a library, not a runnable UI, HTTP server, or APK. Installers are not built yet.
+M1 remains a library. A Tauri local preview shell now runs on the Android emulator;
+the HTTP server, full extraction workflow and production installers are not built yet.
+
+## Android Emulator Preview
+
+The `app/` directory contains the new Tauri 2 shell, connected directly to
+trainlead-core. This brings a limited part of M3/M4 forward at the user's request;
+it does not complete either milestone or replace the pending M2 API.
+
+Available: on-device SQLite, first-run privacy notice, paste/export capture to a
+visible review inbox, fixed demo ingestion through the real core, requirement
+cards with full source sightings and logistics, search, repeated-only filtering,
+start-date/latest sorting, light/dark themes and a mobile Capture shortcut.
+
+**Live LLM extraction is deliberately not connected in this preview.** Arbitrary
+paste/export messages are saved as needs-review, not converted to fictional
+requirements. Load demo uses fixed mock responses and visibly labels records DEMO;
+it never sends messages to Anthropic. Loading demo again stores additional sightings.
+Screenshot capture, keychain/Keystore, notifications, Android share target, watcher,
+linked-device ingestion and full filters/CSV/manual-cluster UI remain pending.
+
+Prerequisites: Rust 1.90+ for the shell (tested 1.99.1), Node 22+ (tested 24.16),
+Java 17, Android SDK platform 36, build-tools, emulator and NDK (tested 29.0.13846066).
+The existing PaisaPilot AVD is x86-64; the APK below is for x86-64 emulators only,
+not ARM phones. Native Android project scaffolding lives under app/src-tauri/gen/android.
+
+From the workspace root, on Windows PowerShell:
+
+```powershell
+npm.cmd --prefix app ci
+rustup target add x86_64-linux-android
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:NDK_HOME = "$env:ANDROID_HOME\ndk\29.0.13846066"
+npm.cmd --prefix app run tauri -- android init --ci --skip-targets-install
+& .\app\scripts\run-android.ps1
+```
+
+Android init is only necessary when the generated project is missing. The script
+starts PaisaPilot if needed, builds, installs and launches the debug-signed APK.
+Use `-SkipBuild` to install/launch an existing APK, or `-SmokeTest` to run the
+end-to-end WebView test (this accepts local consent and adds demo/review test data).
+It does not wipe the emulator or existing app data. On a cold boot with SkipBuild,
+Android may still be booting; retry after its home screen appears.
+
+APK: `app/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`.
+App ID: `app.trainlead.mobile.debug`. Data is in the app's private data directory,
+not the legacy server database. Debug signing is Android's development key, not
+a production release signature. Do not distribute this preview as a production app.
+
+The run script sets `ORG_GRADLE_PROJECT_kotlin.incremental=false` to avoid Kotlin's
+cross-drive incremental-cache failures when Cargo is on C: and this workspace is
+on D:. Tauri's generated Gradle/Kotlin code still emits upstream deprecation warnings.
+Vite excludes native files from its watcher to avoid Windows locked-library errors.
+
+Desktop development: `npm.cmd --prefix app run tauri -- dev`.
+Browser layout preview: `npm.cmd --prefix app run dev`, then http://127.0.0.1:1420/.
+Browser preview does not have native storage commands. Android's bundled APK
+needs neither that dev server nor an API server to run.
 
 ## M1 Build And Test
 
@@ -36,7 +93,8 @@ cargo test --workspace
 cargo fmt --all -- --check
 ```
 
-Rust edition 2024; declared MSRV 1.88. Verification uses Rust 1.99.1 on Windows.
+Rust edition 2024; core declared MSRV 1.88; shell minimum 1.90.
+Verification uses Rust 1.99.1 on Windows and an x86-64 Android emulator.
 The declared MSRV and other operating systems have not yet been tested.
 Dependencies are pinned by the generated Cargo.lock.
 
@@ -137,7 +195,11 @@ transaction rollback, API-failure input retention, and on-disk persistence.
 The AngularJS/Mysuru/2-7 Nov/6th sem/TFA/payment-25-Nov acceptance case uses a mocked
 LLM response and checks normalization, structured fields and source retention.
 It does **not** certify real model extraction accuracy. Live extraction, actual
-HTTP retry timing, desktop/mobile integrations and packaging remain unverified.
+HTTP retry timing, notification/share integrations and production packaging remain
+unverified. The shell adds two tests for durable review capture and demo dedup.
+The Android WebView smoke test checks the actual native IPC, demo cluster cards,
+repeat/search filters, local capture and mobile width; it writes a generated
+screenshot to app/.smoke/android-light.png. Browser checks cover consent and themes.
 
 ## Legacy Prototype Reference
 
