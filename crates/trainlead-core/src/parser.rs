@@ -10,12 +10,18 @@ pub fn parse_export(text: &str, source_group: &str) -> Result<Vec<Message>> {
     let mut messages: Vec<Message> = Vec::new();
     let mut current: Option<Message> = None;
     for (index, raw_line) in text.lines().enumerate() {
-        let line = raw_line.replace(['\u{200e}', '\u{200f}', '\u{feff}'], "")
+        let line = raw_line
+            .replace(['\u{200e}', '\u{200f}', '\u{feff}'], "")
             .replace(['\u{202f}', '\u{a0}'], " ");
         if let Some(captures) = header.captures(&line) {
-            if let Some(message) = current.take() { messages.push(message); }
-            let timestamp = parse_timestamp(&captures[1], &captures[2])
-                .map_err(|detail| Error::Export { line: index + 1, detail })?;
+            if let Some(message) = current.take() {
+                messages.push(message);
+            }
+            let timestamp =
+                parse_timestamp(&captures[1], &captures[2]).map_err(|detail| Error::Export {
+                    line: index + 1,
+                    detail,
+                })?;
             if let Some((sender, body)) = captures[3].split_once(": ")
                 && !sender.trim().is_empty()
             {
@@ -31,18 +37,24 @@ pub fn parse_export(text: &str, source_group: &str) -> Result<Vec<Message>> {
             message.raw_text.push_str(&line);
         }
     }
-    if let Some(message) = current { messages.push(message); }
+    if let Some(message) = current {
+        messages.push(message);
+    }
     Ok(messages)
 }
 
 fn parse_timestamp(date: &str, time: &str) -> std::result::Result<String, String> {
     let date = date.replace('.', "/");
     let parts: Vec<&str> = date.split('/').collect();
-    let [day, month, year] = parts.as_slice() else { return Err("invalid date".into()); };
+    let [day, month, year] = parts.as_slice() else {
+        return Err("invalid date".into());
+    };
     let day: u32 = day.parse().map_err(|_| "invalid day")?;
     let month: u32 = month.parse().map_err(|_| "invalid month")?;
     let mut year_number: i32 = year.parse().map_err(|_| "invalid year")?;
-    if year.len() == 2 { year_number += 2000; }
+    if year.len() == 2 {
+        year_number += 2000;
+    }
     let date = NaiveDate::from_ymd_opt(year_number, month, day).ok_or("invalid calendar date")?;
     let time = time.replace('.', "").to_uppercase();
     let time = if time.contains("AM") || time.contains("PM") {
@@ -53,7 +65,8 @@ fn parse_timestamp(date: &str, time: &str) -> std::result::Result<String, String
     } else {
         NaiveTime::parse_from_str(&time, "%H:%M:%S")
             .or_else(|_| NaiveTime::parse_from_str(&time, "%H:%M"))
-    }.map_err(|error| error.to_string())?;
+    }
+    .map_err(|error| error.to_string())?;
     Ok(date.and_time(time).format("%Y-%m-%dT%H:%M:%S").to_string())
 }
 
@@ -76,7 +89,10 @@ mod tests {
 
     #[test]
     fn handles_unicode_spacing_24h_and_colons() -> Result<()> {
-        let messages = parse_export("\u{feff}[2.11.2026, 09:05:01] Alice: Dates: 2-7 Nov\n[2.11.2026, 4:55\u{202f}p.m.] Bob: FDP", "FDP")?;
+        let messages = parse_export(
+            "\u{feff}[2.11.2026, 09:05:01] Alice: Dates: 2-7 Nov\n[2.11.2026, 4:55\u{202f}p.m.] Bob: FDP",
+            "FDP",
+        )?;
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].raw_text, "Dates: 2-7 Nov");
         assert_eq!(messages[1].timestamp, "2026-11-02T16:55:00");

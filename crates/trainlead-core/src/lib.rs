@@ -1,5 +1,10 @@
+pub mod dedup;
+pub mod extraction;
 pub mod models;
 pub mod parser;
+pub mod pipeline;
+pub mod source;
+pub mod store;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
