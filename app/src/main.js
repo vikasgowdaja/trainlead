@@ -1,12 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createIcons, Sun, Moon, Search, Upload, Inbox, Layers,
   FlaskConical, Save, MapPin, CalendarDays, Phone, MessageCircle, Check, Minus,
-  CircleHelp, ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight } from 'lucide';
+  CircleHelp, ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight, KeyRound, RotateCw } from 'lucide';
 import './style.css';
 
 const icons = { Sun, Moon, Search, Upload, Inbox, Layers, FlaskConical,
   Save, MapPin, CalendarDays, Phone, MessageCircle, Check, Minus, CircleHelp,
-  ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight };
+  ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight, KeyRound, RotateCw };
 const state = { leads: [], reviews: [], tab: 'leads', busy: false };
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -33,7 +33,7 @@ document.querySelector('#app').innerHTML = `
           <button type="button" id="upload" class="icon-button" title="Import chat export (.txt)" aria-label="Import chat export">${icon('upload')}</button></div>
         <input id="export-file" type="file" accept=".txt,text/plain" hidden>
       </form>
-      <p class="state-note" id="extraction-note">Extraction off</p>
+      <button type="button" id="ai-settings" class="ai-status">${icon('key-round')}<span id="extraction-note">AI extraction off</span></button>
       <div class="divider"></div>
       <button id="demo" class="secondary">${icon('flask-conical')} Load demo</button>
       <p id="status" role="status" aria-live="polite">Opening workspace...</p>
@@ -50,6 +50,7 @@ document.querySelector('#app').innerHTML = `
       <div class="toolbar"><label class="search-field">${icon('search')}<input id="search" type="search" placeholder="Search tech, city, vendor..." aria-label="Search requirements"></label>
         <label id="repeat-control" class="check-label"><input id="repeated" type="checkbox"> Repeated only</label>
         <label id="sort-control" class="sort-label">${icon('arrow-up-down')}<select id="sort" aria-label="Sort requirements"><option value="date">Start date</option><option value="latest">Latest seen</option></select></label>
+        <button id="retry-all" class="secondary retry-all" hidden>${icon('rotate-cw')} Retry all</button>
       </div>
       <section id="leads" class="lead-list" aria-label="Requirements"></section>
     </main>
@@ -58,9 +59,25 @@ document.querySelector('#app').innerHTML = `
     <div class="privacy-symbol">${icon('shield-check')}</div><span class="eyebrow">BEFORE YOU START</span>
     <h2 id="privacy-title">Your messages stay here.</h2>
     <p>This preview stores group messages, vendor details and phone numbers on this device in an unencrypted SQLite database. No telemetry.</p>
-    <p>Paste and import extraction uses Groq only when a GROQ_API_KEY is configured: messages matching training keywords are then sent to Groq's servers for processing. Without a key, messages stay on this device in the review inbox. Demo data is fictional.</p>
+    <p>Pasted and imported messages are read on this device by TrainLead's built-in rules. If you add a Groq API key in AI extraction settings, messages matching training keywords are instead sent to Groq's servers for better results. Demo data is fictional.</p>
     <label class="consent"><input id="consent" type="checkbox"> I understand that messages may contain other people's personal data.</label>
     <button id="privacy-continue" class="primary" disabled>Open workspace ${icon('arrow-right')}</button>
+  </dialog>
+  <dialog id="ai-dialog" aria-labelledby="ai-title">
+    <div class="privacy-symbol">${icon('key-round')}</div><span class="eyebrow">AI EXTRACTION</span>
+    <h2 id="ai-title">Connect Groq</h2>
+    <p id="ai-state" class="ai-state">Not connected</p>
+    <p>Optional. Without a key, TrainLead reads messages with built-in rules on this device. Groq usually understands unusual wording better.</p>
+    <p>Create a key at console.groq.com/keys and paste it below. TrainLead checks it with Groq, then keeps it only in this app's private storage. It is never shown again.</p>
+    <p>With a key, messages that look like training requirements are sent to Groq's servers. If Groq fails, TrainLead falls back to the built-in rules.</p>
+    <form id="ai-form">
+      <label for="groq-key">Groq API key</label>
+      <input id="groq-key" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="gsk_..." required>
+      <button type="submit" class="primary" id="ai-save">Save and check key</button>
+    </form>
+    <p id="ai-feedback" role="status" aria-live="polite"></p>
+    <div class="dialog-actions"><button type="button" id="ai-remove" class="text-button" hidden>Remove saved key</button>
+      <button type="button" id="ai-close" class="text-button">Close</button></div>
   </dialog>
 `;
 
@@ -72,7 +89,7 @@ function announce(message, error = false) {
 }
 function setBusy(busy) {
   state.busy = busy;
-  document.querySelectorAll('#capture-form button, #demo, #refresh').forEach(button => { button.disabled = busy; });
+  document.querySelectorAll('#capture-form button, #demo, #refresh, #retry-all, [data-retry]').forEach(button => { button.disabled = busy; });
 }
 function formatDate(value) {
   if (!value) return 'Dates pending';
@@ -120,10 +137,11 @@ function render() {
   document.querySelector('#view-label').textContent = inbox ? 'AWAITING EXTRACTION' : 'YOUR OPPORTUNITIES';
   document.querySelector('#repeat-control').hidden = inbox;
   document.querySelector('#sort-control').hidden = inbox;
+  document.querySelector('#retry-all').hidden = !inbox || !state.reviews.length;
   let entries;
   if (inbox) {
     entries = state.reviews.filter(entry => JSON.stringify(entry.message).toLowerCase().includes(search));
-    document.querySelector('#leads').innerHTML = entries.map(entry => `<article class="lead-card review-card"><div class="card-top"><strong>${escape(entry.message.source_group)}</strong><span class="review-badge">Needs review</span></div><small>${escape(entry.message.sender || 'Pasted message')} / ${escape(entry.message.timestamp)}</small><pre>${escape(entry.message.raw_text)}</pre><p class="state-note">${escape(entry.review_reason)}</p></article>`).join('');
+    document.querySelector('#leads').innerHTML = entries.map(entry => `<article class="lead-card review-card"><div class="card-top"><strong>${escape(entry.message.source_group)}</strong><span class="review-badge">Needs review</span></div><small>${escape(entry.message.sender || 'Pasted message')} / ${escape(entry.message.timestamp)}</small><pre>${escape(entry.message.raw_text)}</pre><p class="state-note">${escape(entry.review_reason)}</p><button class="text-button" data-retry="${Number(entry.id)}">${icon('rotate-cw')} Retry extraction</button></article>`).join('');
   } else {
     entries = state.leads.filter(cluster => (!repeated || cluster.seen > 1) && JSON.stringify(cluster).toLowerCase().includes(search));
     if (document.querySelector('#sort').value === 'date') entries.sort((left, right) => (left.primary.requirement.start_date || '9999').localeCompare(right.primary.requirement.start_date || '9999'));
@@ -142,16 +160,17 @@ async function reload() {
   }
   [state.leads, state.reviews, state.extraction] = await Promise.all([invoke('list_leads'), invoke('list_reviews'), invoke('extraction_status')]);
   const note = document.querySelector('#extraction-note');
-  note.textContent = state.extraction.enabled ? `Extraction on / Groq ${state.extraction.model}` : 'Extraction off / add GROQ_API_KEY to .env';
-  note.classList.toggle('enabled', state.extraction.enabled);
-  document.querySelector('#submit-label').textContent = state.extraction.enabled ? 'Extract' : 'Save to inbox';
+  note.textContent = state.extraction.enabled ? 'Extraction: Groq (rules as backup)' : 'Extraction: on-device rules / add Groq key';
+  document.querySelector('#ai-settings').classList.toggle('enabled', state.extraction.enabled);
+  document.querySelector('#submit-label').textContent = 'Extract';
   render();
 }
 function summarize(report, noun) {
-  if (!report.found && !report.needs_review) return `No training requirement found / ${report.skipped} ${noun} skipped`;
+  const engine = report.engine ? ` / via ${report.engine}` : '';
+  if (!report.found && !report.needs_review) return `No training requirement found / ${report.skipped} ${noun} skipped${engine}`;
   const parts = [`Found ${report.found}: ${report.new} new, ${report.exact} exact repeat, ${report.similar} similar`];
   if (report.needs_review) parts.push(`${report.needs_review} to review inbox`);
-  return parts.join(' / ');
+  return parts.join(' / ') + engine;
 }
 async function action(work) {
   if (state.busy) return;
@@ -199,6 +218,70 @@ document.querySelector('#demo').addEventListener('click', () => action(async () 
 }));
 document.querySelector('#leads').addEventListener('click', event => {
   if (event.target.closest('[data-demo]')) document.querySelector('#demo').click();
+  const retry = event.target.closest('[data-retry]');
+  if (retry) retryReview([Number(retry.dataset.retry)]);
+});
+document.querySelector('#retry-all').addEventListener('click', () => retryReview(null));
+function retryReview(ids) {
+  action(async () => {
+    announce(state.extraction?.enabled ? 'Extracting with Groq...' : 'Extracting on this device...');
+    const report = await invoke('retry_review', { ids });
+    if (report.found) state.tab = 'leads';
+    await reload();
+    announce(summarize(report, ids ? 'message' : 'messages'), report.needs_review > 0 && !report.found);
+  });
+}
+const aiDialog = document.querySelector('#ai-dialog');
+function showAiState() {
+  const status = state.extraction;
+  const connected = Boolean(status?.enabled);
+  document.querySelector('#ai-state').textContent = connected
+    ? `Connected: Groq ${status.model} (key ${status.source === 'app' ? 'saved in this app' : 'from .env'})`
+    : 'Not connected: messages wait in the review inbox';
+  document.querySelector('#ai-state').classList.toggle('enabled', connected);
+  document.querySelector('#ai-remove').hidden = status?.source !== 'app';
+}
+function openAiSettings() {
+  if (!native) { announce('Open the installed TrainLead app to connect Groq', true); return; }
+  document.querySelector('#ai-feedback').textContent = '';
+  showAiState();
+  aiDialog.showModal();
+  document.querySelector('#groq-key').focus();
+}
+function aiFeedback(text, error = false) {
+  const feedback = document.querySelector('#ai-feedback');
+  feedback.textContent = text;
+  feedback.classList.toggle('error', error);
+}
+document.querySelector('#ai-settings').addEventListener('click', openAiSettings);
+document.querySelector('#ai-close').addEventListener('click', () => aiDialog.close());
+document.querySelector('#ai-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const input = document.querySelector('#groq-key');
+  const save = document.querySelector('#ai-save');
+  save.disabled = true;
+  aiFeedback('Checking key with Groq...');
+  try {
+    state.extraction = await invoke('save_groq_key', { key: input.value });
+    input.value = '';
+    await reload();
+    showAiState();
+    aiFeedback(state.reviews.length ? `Connected. Use "Retry all" in the inbox to re-extract ${state.reviews.length} waiting messages.` : 'Connected. New pastes will be extracted with Groq.');
+  } catch (error) {
+    aiFeedback(String(error), true);
+  } finally {
+    save.disabled = false;
+  }
+});
+document.querySelector('#ai-remove').addEventListener('click', async () => {
+  try {
+    state.extraction = await invoke('clear_groq_key');
+    await reload();
+    showAiState();
+    aiFeedback('Saved key removed.');
+  } catch (error) {
+    aiFeedback(String(error), true);
+  }
 });
 document.querySelector('#capture-open').addEventListener('click', () => {
   document.querySelector('.capture-panel').scrollIntoView();
@@ -222,4 +305,4 @@ document.querySelector('#privacy-continue').addEventListener('click', () => {
 });
 if (localStorage.getItem('trainlead-local-consent-v2') !== 'accepted') dialog.showModal();
 refreshIcons();
-reload().then(() => { if (native) announce(state.extraction?.enabled ? 'Ready / Groq extraction on' : 'Ready / local capture only'); }).catch(error => announce(String(error), true));
+reload().then(() => { if (native) announce(state.extraction?.enabled ? 'Ready / extraction with Groq' : 'Ready / extraction on this device'); }).catch(error => announce(String(error), true));

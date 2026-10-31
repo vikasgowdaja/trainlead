@@ -48,6 +48,19 @@ textarea { resize: vertical; min-height: 130px; line-height: 1.6; }
 .primary { color: var(--paper); background: var(--accent); border-color: var(--accent); }
 .secondary { width: 100%; }
 .state-note { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 12px 0; }
+.ai-status { width: 100%; justify-content: flex-start; margin: 12px 0 0; font-size: 11px; color: var(--warning); border-style: dashed; }
+.ai-status.enabled { color: var(--accent); border-style: solid; }
+.ai-status svg { width: 16px; height: 16px; }
+.text-button { border: 0; background: transparent; color: var(--accent); padding: 10px 0; font-size: 12px; justify-content: flex-start; }
+.text-button:hover { text-decoration: underline; }
+.text-button svg { width: 15px; height: 15px; }
+.retry-all { width: auto; color: var(--accent); }
+.dialog-actions { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.dialog-actions #ai-close { margin-left: auto; }
+.ai-state { color: var(--warning) !important; }
+.ai-state.enabled { color: var(--accent) !important; }
+#ai-feedback { min-height: 1.8em; color: var(--accent); overflow-wrap: anywhere; }
+#ai-feedback.error { color: var(--warning); }
 #extraction-note.enabled { color: var(--accent); }
 .divider { border-top: 1px solid var(--line); margin: 24px 0; }
 #status { margin: 16px 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; color: var(--accent); }

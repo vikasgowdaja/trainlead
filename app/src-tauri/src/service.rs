@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::{Datelike, Local, NaiveDate};
@@ -26,7 +26,7 @@ pub async fn capture<L: LlmClient>(
     text: &str,
     group: &str,
     export: bool,
-    llm: Option<L>,
+    llm: L,
 ) -> Result<IngestReport> {
     if text.trim().is_empty() || text.len() > 2 * 1024 * 1024 {
         return Err(Error::Validation(
@@ -39,8 +39,12 @@ pub async fn capture<L: LlmClient>(
             "source group must contain 1-200 bytes".into(),
         ));
     }
+    // Pasted text copied from WhatsApp carries a header per message; split it like an export.
+    let copied = if export { Vec::new() } else { parse_export(text, group).unwrap_or_default() };
     let messages = if export {
         parse_export(text, group)?
+    } else if !copied.is_empty() {
+        copied
     } else {
         vec![Message {
             source_group: group.into(),
@@ -53,18 +57,6 @@ pub async fn capture<L: LlmClient>(
         return Err(Error::Validation("no messages found in export".into()));
     }
     let mut store = open(path)?;
-    let Some(llm) = llm else {
-        let ids = store.record_messages(&messages)?;
-        store.mark_messages(
-            &ids,
-            "needs_review",
-            Some("Extraction is off: add GROQ_API_KEY to .env and restart TrainLead"),
-        )?;
-        return Ok(IngestReport {
-            needs_review: ids.len(),
-            ..Default::default()
-        });
-    };
     let result = Pipeline::new(llm)?
         .ingest(
             SourceBatch::Messages(messages),
@@ -72,6 +64,27 @@ pub async fn capture<L: LlmClient>(
             Local::now().date_naive(),
         )
         .await;
+    park_on_failure(&mut store, result)
+}
+
+/// Re-extracts review-inbox messages (all of them when `ids` is None) without duplicating them.
+pub async fn retry<L: LlmClient>(path: &Path, ids: Option<Vec<i64>>, llm: L) -> Result<IngestReport> {
+    let mut store = open(path)?;
+    let ids = match ids {
+        Some(ids) => ids,
+        None => store
+            .messages_by_status("needs_review")?
+            .into_iter()
+            .map(|message| message.id)
+            .collect(),
+    };
+    let result = Pipeline::new(llm)?
+        .retry(&ids, &mut store, Local::now().date_naive())
+        .await;
+    park_on_failure(&mut store, result)
+}
+
+fn park_on_failure(store: &mut Store, result: Result<IngestReport>) -> Result<IngestReport> {
     match result {
         Ok(report) => Ok(report),
         Err(error) => {
@@ -91,6 +104,37 @@ pub async fn capture<L: LlmClient>(
                 ..Default::default()
             })
         }
+    }
+}
+
+fn key_path(directory: &Path) -> PathBuf {
+    directory.join("groq_api_key")
+}
+
+pub fn saved_key(directory: &Path) -> Option<String> {
+    std::fs::read_to_string(key_path(directory))
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+}
+
+/// Stored in the app's private data directory (app sandbox on Android), not in SQLite.
+pub fn save_key(directory: &Path, key: &str) -> Result<()> {
+    let temporary = directory.join("groq_api_key.tmp");
+    std::fs::write(&temporary, key)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(temporary, key_path(directory))?;
+    Ok(())
+}
+
+pub fn remove_key(directory: &Path) -> Result<()> {
+    match std::fs::remove_file(key_path(directory)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+        _ => Ok(()),
     }
 }
 
@@ -202,27 +246,23 @@ mod tests {
     }
 
     #[test]
-    fn local_capture_is_durable_and_does_not_claim_extraction() -> Result<()> {
+    fn capture_without_groq_is_extracted_by_on_device_rules() -> Result<()> {
         let path = database();
+        let rules = std::sync::Arc::new(trainlead_core::rules::RuleExtractor::new()?);
+        let extractor = std::sync::Arc::new(trainlead_core::rules::FallbackExtractor::<DemoLlm>::new(None, rules));
         let report = tauri::async_runtime::block_on(capture(
             &path,
-            "Training AngularJS",
+            "Training requirement: AngularJS, Mysuru, 2-7 Nov, TFA provided",
             "Vendors",
             false,
-            None::<DemoLlm>,
+            extractor.clone(),
         ))?;
-        assert_eq!((report.found, report.needs_review), (0, 1));
+        assert_eq!((report.found, report.needs_review), (1, 0));
+        assert_eq!(extractor.engine(), "on-device rules");
         {
             let store = open(&path)?;
-            let review = store.messages_by_status("needs_review")?;
-            assert_eq!(review.len(), 1);
-            assert!(
-                review[0]
-                    .review_reason
-                    .as_deref()
-                    .is_some_and(|reason| reason.contains("GROQ_API_KEY"))
-            );
-            assert!(store.clusters()?.is_empty());
+            assert!(store.messages_by_status("needs_review")?.is_empty());
+            assert_eq!(store.clusters()?[0].primary.requirement.city.as_deref(), Some("Mysuru"));
         }
         std::fs::remove_file(path)?;
         Ok(())
@@ -245,7 +285,7 @@ mod tests {
             "Training requirement AngularJS Mysuru",
             "Vendors",
             false,
-            Some(OfflineLlm),
+            OfflineLlm,
         ))?;
         assert_eq!((report.found, report.needs_review), (0, 1));
         {
@@ -260,6 +300,38 @@ mod tests {
             );
         }
         std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retry_extracts_inbox_messages_and_failures_return_to_the_inbox() -> Result<()> {
+        let path = database();
+        tauri::async_runtime::block_on(capture(&path, SAMPLE, "Vendors", false, OfflineLlm))?;
+        let failed = tauri::async_runtime::block_on(retry(&path, None, OfflineLlm))?;
+        assert_eq!((failed.found, failed.needs_review), (0, 1));
+        let report = tauri::async_runtime::block_on(retry(&path, None, DemoLlm))?;
+        assert_eq!((report.found, report.new, report.needs_review), (1, 1, 0));
+        {
+            let store = open(&path)?;
+            assert!(store.messages_by_status("needs_review")?.is_empty());
+            assert_eq!(store.messages_by_status("processed")?.len(), 1);
+            assert_eq!(store.clusters()?.len(), 1);
+        }
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn api_key_is_saved_trimmed_and_removable() -> Result<()> {
+        let directory = database().with_extension("keys");
+        std::fs::create_dir_all(&directory)?;
+        assert_eq!(saved_key(&directory), None);
+        save_key(&directory, "gsk_example_key_for_tests")?;
+        assert_eq!(saved_key(&directory).as_deref(), Some("gsk_example_key_for_tests"));
+        remove_key(&directory)?;
+        remove_key(&directory)?;
+        assert_eq!(saved_key(&directory), None);
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 

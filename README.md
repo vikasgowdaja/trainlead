@@ -133,11 +133,36 @@ worker rather than doing expensive database work on Tokio request threads.
 optional `GROQ_MODEL` (default `llama-3.3-70b-versatile`) and optional
 `GROQ_VISION_MODEL` (default `meta-llama/llama-4-scout-17b-16e-instruct`). These model
 IDs were not verified against a live Groq account; override them if Groq retires them.
-The desktop app loads `.env` from its app-data directory
+The easiest setup, and the only one on Android: tap **AI extraction** in the Capture
+panel, paste the key, and choose **Save and check key**. TrainLead verifies the key
+with Groq (no message content is sent) and stores it in a file in the app's private
+data directory, which the Android app sandbox protects. It is not yet Keystore- or
+keychain-encrypted. A key saved in the app takes precedence over `.env`.
+The desktop app also loads `.env` from its app-data directory
 (`%APPDATA%\app.trainlead.mobile\.env` on Windows) and, in development, from the
-workspace root. Restart the app after changing it. Android has no `.env` yet.
+workspace root; restart the app after changing it.
+Messages already in the review inbox are extracted with **Retry extraction** (one
+message) or **Retry all with Groq**; this processes them in place, with no duplicate
+records. Screenshots in the inbox cannot be retried yet.
 Tests require no credentials or network. No API key is checked into source, stored
 in SQLite, or logged.
+
+**On-device extraction (no key needed).** `rules::RuleExtractor` reads messages with
+regular expressions and built-in skill and Indian-city vocabularies: skills, date
+ranges ("2-7 Nov", "Nov 2 through 7", "28 Dec - 3 Jan", "Start Date: 1 November
+2026"), payment dates, city/state, college names, mode, audience ("6th sem Engg"),
+TFA / travel / food / stay, rates ("8k per day", "₹3,000 per day"), vendor name and
+phone. It skips greetings, trainer-availability posts and non-training job ads, and
+splits a message listing several cities into one requirement per city. It cannot
+read screenshots and is less flexible than an LLM with unusual wording.
+`rules::FallbackExtractor` tries Groq first and falls back to these rules whenever
+Groq errors or returns output that fails validation; each result reports which
+engine produced it. If Groq returns 404 for the configured model (retired or not on
+the account), `GroqClient` lists the account's models, switches to an available chat
+model (preferring the list in `PREFERRED_TEXT_MODELS`) and retries once.
+
+Pasted text copied from WhatsApp (`[11:41 am, 31/10/2026] Sender: text`, several
+messages at once) is split into separate messages before extraction, like an export.
 
 HTTP 429/5xx responses get three retries with exponential backoff (1/2/4 seconds),
 honoring numeric Retry-After values with a 60-second cap. Other HTTP failures return

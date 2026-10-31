@@ -5,7 +5,7 @@ use crate::{
     Error, Result,
     extraction::{ExtractionRequest, LlmClient, MAX_BATCH, decode_output},
     models::{DuplicateKind, IngestReport, Message},
-    source::{MessageSource, SourceBatch},
+    source::{MessageSource, Screenshot, SourceBatch},
     store::Store,
 };
 
@@ -48,10 +48,27 @@ impl<L: LlmClient> Pipeline<L> {
         } else {
             store.record_messages(&messages)?
         };
+        let recorded = ids.into_iter().zip(messages).collect();
+        self.process(recorded, screenshot, store, today).await
+    }
+
+    /// Re-extracts messages from the review inbox in place, without recording duplicates.
+    pub async fn retry(&self, ids: &[i64], store: &mut Store, today: NaiveDate) -> Result<IngestReport> {
+        let requeued = store.requeue_review(ids)?;
+        self.process(requeued, None, store, today).await
+    }
+
+    async fn process(
+        &self,
+        recorded: Vec<(i64, Message)>,
+        screenshot: Option<Screenshot>,
+        store: &mut Store,
+        today: NaiveDate,
+    ) -> Result<IngestReport> {
         let mut report = IngestReport::default();
         let mut candidates: Vec<(i64, Message)> = Vec::new();
         let mut skipped = Vec::new();
-        for (id, message) in ids.into_iter().zip(messages) {
+        for (id, message) in recorded {
             if screenshot.is_some() || self.keywords.is_match(&message.raw_text) {
                 candidates.push((id, message));
             } else {

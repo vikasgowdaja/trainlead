@@ -7,22 +7,28 @@ pub fn parse_export(text: &str, source_group: &str) -> Result<Vec<Message>> {
     let header = Regex::new(
         r"^\[?(\d{1,2}[/.]\d{1,2}[/.]\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[aApP]\.?[mM]\.?)?)(?:\]\s*|\s+-\s+)(.*)$",
     ).map_err(|error| Error::Validation(error.to_string()))?;
+    // "Copy" from WhatsApp puts the time first: [11:41 am, 31/10/2026] Sender: text
+    let copied = Regex::new(
+        r"^\[(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[aApP]\.?[mM]\.?)?),\s*(\d{1,2}[/.]\d{1,2}[/.]\d{2,4})\]\s*(.*)$",
+    ).map_err(|error| Error::Validation(error.to_string()))?;
     let mut messages: Vec<Message> = Vec::new();
     let mut current: Option<Message> = None;
     for (index, raw_line) in text.lines().enumerate() {
         let line = raw_line
             .replace(['\u{200e}', '\u{200f}', '\u{feff}'], "")
             .replace(['\u{202f}', '\u{a0}'], " ");
-        if let Some(captures) = header.captures(&line) {
+        let parts = header.captures(&line).map(|captures| (captures.get(1), captures.get(2), captures.get(3)))
+            .or_else(|| copied.captures(&line).map(|captures| (captures.get(2), captures.get(1), captures.get(3))));
+        if let Some((Some(date), Some(time), Some(rest))) = parts {
             if let Some(message) = current.take() {
                 messages.push(message);
             }
             let timestamp =
-                parse_timestamp(&captures[1], &captures[2]).map_err(|detail| Error::Export {
+                parse_timestamp(date.as_str(), time.as_str()).map_err(|detail| Error::Export {
                     line: index + 1,
                     detail,
                 })?;
-            if let Some((sender, body)) = captures[3].split_once(": ")
+            if let Some((sender, body)) = rest.as_str().split_once(": ")
                 && !sender.trim().is_empty()
             {
                 current = Some(Message {
@@ -84,6 +90,19 @@ mod tests {
         assert_eq!(messages[1].timestamp, "2026-10-12T16:55:10");
         assert_eq!(messages[1].sender.as_deref(), Some("Bob"));
         assert_eq!(messages[1].raw_text, "Workshop\nMysuru");
+        Ok(())
+    }
+
+    #[test]
+    fn splits_messages_copied_from_whatsapp_with_time_first() -> Result<()> {
+        let text = "[11:41 am, 31/10/2026] +91 91319 72687: RAG Trainer\nLocation: Lucknow\n[2:37 pm, 31/10/2026] Sudhir Vendor: Soft skills\nJaipur";
+        let messages = parse_export(text, "Pasted")?;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].timestamp, "2026-10-31T11:41:00");
+        assert_eq!(messages[0].sender.as_deref(), Some("+91 91319 72687"));
+        assert_eq!(messages[0].raw_text, "RAG Trainer\nLocation: Lucknow");
+        assert_eq!(messages[1].timestamp, "2026-10-31T14:37:00");
+        assert_eq!(messages[1].raw_text, "Soft skills\nJaipur");
         Ok(())
     }
 

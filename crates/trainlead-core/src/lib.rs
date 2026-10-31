@@ -3,6 +3,7 @@ pub mod extraction;
 pub mod models;
 pub mod parser;
 pub mod pipeline;
+pub mod rules;
 pub mod source;
 pub mod store;
 

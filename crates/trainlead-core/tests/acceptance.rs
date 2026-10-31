@@ -196,6 +196,25 @@ async fn invalid_json_reasked_once_then_durably_flagged_for_review() -> Result<(
 }
 
 #[tokio::test]
+async fn retry_extracts_review_messages_in_place_without_duplicates() -> Result<()> {
+    let mut store = Store::in_memory(DedupThresholds::default())?;
+    let failing = Pipeline::new(MockLlm::new(vec!["bad".into(), "bad".into()]))?;
+    failing.ingest(SourceBatch::Messages(vec![message("Vendors", "Alice", "Training requirement AngularJS Mysuru")]), &mut store, today()).await?;
+    let review = store.messages_by_status("needs_review")?;
+    assert_eq!(review.len(), 1);
+
+    let mock = MockLlm::new(vec![output(vec![(0, requirement("Mysuru"))])]);
+    let report = Pipeline::new(mock.clone())?.retry(&[review[0].id], &mut store, today()).await?;
+    assert_eq!((report.found, report.new, report.needs_review), (1, 1, 0));
+    assert!(store.messages_by_status("needs_review")?.is_empty());
+    assert_eq!(store.messages_by_status("processed")?.len(), 1);
+    assert_eq!(store.clusters()?[0].primary.message.raw_text, "Training requirement AngularJS Mysuru");
+    let again = Pipeline::new(MockLlm::new(vec![]))?.retry(&[review[0].id], &mut store, today()).await?;
+    assert_eq!(again.found, 0, "processed messages are not re-extracted");
+    Ok(())
+}
+
+#[tokio::test]
 async fn invalid_json_can_be_corrected_without_partial_insertions() -> Result<()> {
     let mut invalid = serde_json::to_value(ExtractionOutput {
         requirements: vec![ExtractionItem {

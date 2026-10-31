@@ -163,6 +163,26 @@ impl Store {
         .collect()
     }
 
+    /// Moves text messages from the review inbox back to pending so they can be extracted again.
+    /// Screenshots and messages not awaiting review are left untouched.
+    pub fn requeue_review(&mut self, ids: &[i64]) -> Result<Vec<(i64, Message)>> {
+        let transaction = self.connection.transaction()?;
+        let mut requeued = Vec::with_capacity(ids.len());
+        for id in ids {
+            let changed = transaction.execute(
+                "UPDATE messages SET status='pending',review_reason=NULL WHERE id=?1 AND status='needs_review'
+                 AND NOT EXISTS (SELECT 1 FROM screenshots WHERE message_id=?1)",
+                [id],
+            )?;
+            if changed == 1 {
+                let data: String = transaction.query_row("SELECT data FROM messages WHERE id=?1", [id], |row| row.get(0))?;
+                requeued.push((*id, serde_json::from_str(&data)?));
+            }
+        }
+        transaction.commit()?;
+        Ok(requeued)
+    }
+
     pub fn save_batch(
         &mut self,
         ids: &[i64],
