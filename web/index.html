@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TrainLead</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#0b7a75">
+<style>
+:root{--ink:#12202b;--mute:#5b6b78;--bg:#eef1f4;--card:#fff;--line:#d9dfe4;--teal:#0b7a75;--amber:#a55a00;--chip:#e3eeee}
+@media(prefers-color-scheme:dark){:root{--ink:#e6edf2;--mute:#9aabb8;--bg:#10181e;--card:#17222a;--line:#27353f;--teal:#3fc1b9;--amber:#e8a24a;--chip:#1d3a3b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Segoe UI",system-ui,sans-serif}
+main{display:grid;grid-template-columns:330px 1fr;gap:20px;max-width:1220px;margin:0 auto;padding:20px}
+@media(max-width:820px){main{grid-template-columns:1fr}}
+h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}h2{font-size:15px;margin:16px 0 6px}
+.sub{color:var(--mute);margin:0 0 14px}
+.panel,.lead{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+textarea,input[type=text],input[type=search]{width:100%;font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:8px}
+textarea{min-height:110px;resize:vertical}
+button,label.btn{font:inherit;cursor:pointer;border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:6px;padding:7px 12px;display:inline-block;margin-top:6px}
+button.ghost,label.ghost{background:transparent;color:var(--teal)}
+:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+input[type=file]{display:none}
+#st{min-height:22px;margin-top:10px;color:var(--mute)}
+.bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.bar input[type=search]{flex:1;min-width:180px}
+.lead{margin-bottom:12px}
+.top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline}
+.tech{font-weight:700;font-size:17px}.when{color:var(--mute)}
+.where{margin:2px 0 10px}
+.strip{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;width:max-content;max-width:100%}
+.strip span{padding:3px 12px;border-right:1px solid var(--line);font-size:13px}.strip span:last-child{border:0}
+.y{background:var(--teal);color:#fff}.n{text-decoration:line-through;color:var(--mute)}.u{color:var(--mute);background:repeating-linear-gradient(135deg,transparent 0 5px,var(--line) 5px 6px)}
+.note{margin:8px 0 0;color:var(--mute)}
+.vendor{margin-top:10px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.vendor a{color:var(--teal);font-weight:600}
+.seen{margin-top:10px;padding:6px 10px;border-left:3px solid var(--amber);background:color-mix(in srgb,var(--amber) 10%,transparent);border-radius:0 6px 6px 0}
+details{margin-top:8px;color:var(--mute)}summary{cursor:pointer}pre{white-space:pre-wrap;font:inherit;margin:6px 0 0}
+.empty{padding:40px 10px;text-align:center;color:var(--mute)}
+</style></head><body><main>
+<aside><h1>TrainLead</h1><p class="sub">Training requirements from your WhatsApp groups, with repeats merged.</p>
+<div class="panel">
+<h2 style="margin-top:0">Paste messages</h2>
+<input type="text" id="src" placeholder="Group name (optional)"><textarea id="txt" placeholder="Paste one or many requirement messages"></textarea>
+<button id="go">Extract</button>
+<h2>Chat export</h2><label class="btn ghost" for="exp">Choose .txt export</label><input type="file" id="exp" accept=".txt">
+<h2>Screenshot</h2><label class="btn ghost" for="shot">Choose image</label><input type="file" id="shot" accept="image/*"><div class="sub">You can also paste an image with Ctrl+V.</div>
+<div id="st" role="status"></div></div></aside>
+<section><div class="bar"><input type="search" id="q" placeholder="Search tech, city, college, vendor"><label><input type="checkbox" id="rep"> Only repeated</label><a href="/api/export.csv"><button class="ghost" type="button">Download CSV</button></a></div>
+<div id="list"></div></section></main>
+<script>
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let data=[];
+async function load(){try{data=await (await fetch('/api/leads')).json();render()}catch(e){}}
+const fd=d=>d?new Date(d+'T00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):null;
+const cell=(l,v)=>`<span class="${v==='provided'?'y':v==='not provided'?'n':'u'}" title="${l}: ${esc(v||'unknown')}">${l}</span>`;
+function render(){
+  const q=$('#q').value.toLowerCase(),rep=$('#rep').checked;
+  const rows=data.filter(c=>(!rep||c.count>1)&&(!q||JSON.stringify(c.data).toLowerCase().includes(q)));
+  $('#list').innerHTML=rows.map(c=>{const d=c.data,s=c.sources;
+    const dates=[fd(d.start_date),fd(d.end_date)].filter(Boolean).join(' to ')+(d.duration_days?` (${d.duration_days} days)`:'');
+    const wa=d.vendor_phone?String(d.vendor_phone).replace(/\D/g,''):'';
+    const groups=[...new Set(s.map(x=>x.source))];
+    return `<article class="lead"><div class="top"><span class="tech">${esc((d.tech_stack||[]).join(', ')||'Tech not stated')}</span><span class="when">${esc(dates||'Dates not stated')}</span></div>
+<div class="where">${esc([d.college,d.city,d.state].filter(Boolean).join(', ')||'Location not stated')}${d.mode?' ('+esc(d.mode)+')':''}${d.audience?', '+esc(d.audience):''}</div>
+<div class="strip">${cell('Travel',d.travel)}${cell('Food',d.food)}${cell('Stay',d.accommodation)}</div>
+${d.logistics_note||d.rate?`<p class="note">${esc([d.logistics_note,d.rate,d.payment_date&&'Payment '+d.payment_date].filter(Boolean).join(', '))}</p>`:''}
+<div class="vendor"><span>${esc([d.vendor_name,d.vendor_company].filter(Boolean).join(', ')||'Vendor not stated')}</span>${wa?`<a href="tel:+${wa}">Call +${wa}</a><a href="https://wa.me/${wa}" target="_blank" rel="noopener">Open in WhatsApp</a>`:''}</div>
+${c.count>1?`<div class="seen">Seen ${c.count} times in ${groups.length} group${groups.length>1?'s':''}: ${c.exact} exact repeat${c.exact==1?'':'s'}, ${c.similar} similar. ${esc(groups.join(', '))}</div>`:''}
+<details><summary>Original message${c.count>1?' and all sources':''}</summary><pre>${esc(c.raw)}</pre>${c.count>1?'<pre>'+s.map(x=>esc(`${x.kind}: ${x.source}, ${x.sender||'unknown'}, ${x.ts}`)).join('\n')+'</pre>':''}</details></article>`}).join('')
+  ||'<div class="empty">No requirements yet. Paste messages, upload a chat export or a screenshot to begin.</div>'}
+async function send(url,opt){$('#st').textContent='Reading messages...';try{const r=await fetch(url,opt),j=await r.json();
+  $('#st').textContent=r.ok?`Found ${j.found}: ${j.new} new, ${j.exact} exact repeats, ${j.similar} similar.`:'Failed: '+(j.detail||r.status);load()}catch(e){$('#st').textContent='Failed: '+e.message}}
+const up=(url,f)=>{const b=new FormData();b.append('file',f);send(url,{method:'POST',body:b})};
+$('#go').onclick=()=>$('#txt').value.trim()&&send('/api/ingest/text',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({source:$('#src').value||'Pasted',messages:[{text:$('#txt').value}]})});
+$('#exp').onchange=e=>e.target.files[0]&&up('/api/ingest/export',e.target.files[0]);
+$('#shot').onchange=e=>e.target.files[0]&&up('/api/ingest/screenshot',e.target.files[0]);
+document.addEventListener('paste',e=>{const f=[...(e.clipboardData?.files||[])].find(f=>f.type.startsWith('image/'));f&&up('/api/ingest/screenshot',f)});
+$('#q').oninput=$('#rep').onchange=render;
+if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+load();setInterval(load,5000);
+</script></body></html>
