@@ -20,6 +20,7 @@ trainlead-core = { path = "../../crates/trainlead-core" }
 async-trait.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
+dotenvy = "0.15"
 
 [lints]
 workspace = true

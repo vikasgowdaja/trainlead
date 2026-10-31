@@ -48,6 +48,7 @@ textarea { resize: vertical; min-height: 130px; line-height: 1.6; }
 .primary { color: var(--paper); background: var(--accent); border-color: var(--accent); }
 .secondary { width: 100%; }
 .state-note { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 12px 0; }
+#extraction-note.enabled { color: var(--accent); }
 .divider { border-top: 1px solid var(--line); margin: 24px 0; }
 #status { margin: 16px 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; color: var(--accent); }
 #status.error { color: var(--warning); }

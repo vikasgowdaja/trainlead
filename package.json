@@ -1,0 +1,9 @@
+{
+  "name": "trainlead-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix app run dev --",
+    "build": "npm --prefix app run build",
+    "tauri": "npm --prefix app run tauri --"
+  }
+}

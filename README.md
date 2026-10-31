@@ -33,10 +33,11 @@ visible review inbox, fixed demo ingestion through the real core, requirement
 cards with full source sightings and logistics, search, repeated-only filtering,
 start-date/latest sorting, light/dark themes and a mobile Capture shortcut.
 
-**Live LLM extraction is deliberately not connected in this preview.** Arbitrary
-paste/export messages are saved as needs-review, not converted to fictional
-requirements. Load demo uses fixed mock responses and visibly labels records DEMO;
-it never sends messages to Anthropic. Loading demo again stores additional sightings.
+**Live extraction uses Groq when `GROQ_API_KEY` is configured.** Paste and export
+messages matching training keywords are sent to Groq and clustered; without a key, or
+when Groq fails, they are saved as needs-review with the reason, never dropped.
+Load demo uses fixed mock responses and visibly labels records DEMO; it never sends
+messages to Groq. Loading demo again stores additional sightings.
 Screenshot capture, keychain/Keystore, notifications, Android share target, watcher,
 linked-device ingestion and full filters/CSV/manual-cluster UI remain pending.
 
@@ -108,10 +109,10 @@ Dependencies are pinned by the generated Cargo.lock.
     Invalid calendar dates return an error with the line number, not silent data loss.
 - `source::MessageSource`: async ingestion contract. Paste, export and screenshot
     adapters are implemented. Folder/live/Android adapters arrive in M3-M5.
-- `extraction::LlmClient`: mockable async contract; `AnthropicClient` uses the
-    Messages API through reqwest/rustls. Batches contain at most eight messages.
+- `extraction::LlmClient`: mockable async contract; `GroqClient` uses Groq's
+    OpenAI-compatible chat completions API with JSON mode. Batches hold at most eight messages.
 - `pipeline::Pipeline`: keyword prefilter, extraction/re-ask, validation, storage.
-    Screenshots bypass the text filter and use Claude vision with the same schema.
+    Screenshots bypass the text filter and use a Groq vision model with the same schema.
 - `store::Store`: local SQLite with transactions, WAL, foreign keys, indexed exact
     hashes, every sighting, most-complete primary, group/repeat counts, manual merge
     and split, pending messages and a needs-review queue.
@@ -128,18 +129,22 @@ worker rather than doing expensive database work on Tokio request threads.
 
 ## LLM Configuration
 
-`AnthropicClient::from_env()` reads `ANTHROPIC_API_KEY` and `CLAUDE_MODEL`.
-The default model is `claude-sonnet-5-5`, as requested. This model identifier's
-availability has not been verified against a live Anthropic account. Override it
-with an available model when necessary. Tests require no credentials or network.
-`AnthropicClient::new` accepts a secret supplied by the future keychain adapter.
-No API key is checked into source, stored in SQLite, or logged by the core.
+`GroqClient::from_env()` reads `GROQ_API_KEY` (from https://console.groq.com/keys),
+optional `GROQ_MODEL` (default `llama-3.3-70b-versatile`) and optional
+`GROQ_VISION_MODEL` (default `meta-llama/llama-4-scout-17b-16e-instruct`). These model
+IDs were not verified against a live Groq account; override them if Groq retires them.
+The desktop app loads `.env` from its app-data directory
+(`%APPDATA%\app.trainlead.mobile\.env` on Windows) and, in development, from the
+workspace root. Restart the app after changing it. Android has no `.env` yet.
+Tests require no credentials or network. No API key is checked into source, stored
+in SQLite, or logged.
 
 HTTP 429/5xx responses get three retries with exponential backoff (1/2/4 seconds),
 honoring numeric Retry-After values with a 60-second cap. Other HTTP failures return
-an error. Invalid extraction JSON or semantic validation failures get exactly one
-re-extraction; a second failure marks all batch messages needs-review without
-inserting partial requirements. Transport/API failures leave input pending.
+an error. Groq JSON-mode rejections (`json_validate_failed`), invalid extraction JSON
+or semantic validation failures get exactly one re-extraction; a second failure marks
+all batch messages needs-review without inserting partial requirements. In the app,
+transport/API failures also move the messages to needs-review with the error.
 
 ## Explicit Assumptions
 
@@ -173,9 +178,9 @@ permissions and disk encryption. OS keychain/Android Keystore integration and
 evaluation of SQLCipher arrive with secure settings; application-level encryption
 is not claimed in this milestone.
 
-Prefiltered candidate messages and uploaded screenshots are sent to Anthropic when
-the real client is used. Local storage does not mean local inference. The first-run
-UI notice and explicit consent must explain this before any real ingestion in M3.
+Prefiltered candidate messages and uploaded screenshots are sent to Groq when a
+Groq key is configured. Local storage does not mean local inference. The first-run
+notice discloses this and requires consent before the workspace opens.
 
 M2 will require an API key header on every ingest endpoint and default to loopback.
 Linked-device ingestion will be opt-in and off by default: unofficial automation

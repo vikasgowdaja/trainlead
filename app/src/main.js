@@ -29,11 +29,11 @@ document.querySelector('#app').innerHTML = `
       <form id="capture-form">
         <label for="group">Source group</label><input id="group" maxlength="200" value="Pasted requirements" required>
         <label for="message">Message</label><textarea id="message" rows="7" placeholder="Paste a training requirement..." required></textarea>
-        <div class="capture-actions"><button type="submit" class="primary">${icon('save')} Save to inbox</button>
+        <div class="capture-actions"><button type="submit" class="primary">${icon('save')} <span id="submit-label">Save to inbox</span></button>
           <button type="button" id="upload" class="icon-button" title="Import chat export (.txt)" aria-label="Import chat export">${icon('upload')}</button></div>
         <input id="export-file" type="file" accept=".txt,text/plain" hidden>
       </form>
-      <p class="state-note">Extraction not configured</p>
+      <p class="state-note" id="extraction-note">Extraction off</p>
       <div class="divider"></div>
       <button id="demo" class="secondary">${icon('flask-conical')} Load demo</button>
       <p id="status" role="status" aria-live="polite">Opening workspace...</p>
@@ -58,7 +58,7 @@ document.querySelector('#app').innerHTML = `
     <div class="privacy-symbol">${icon('shield-check')}</div><span class="eyebrow">BEFORE YOU START</span>
     <h2 id="privacy-title">Your messages stay here.</h2>
     <p>This preview stores group messages, vendor details and phone numbers on this device in an unencrypted SQLite database. No telemetry.</p>
-    <p>Live AI extraction is not connected. Captured messages go to the review inbox; demo data is fictional. Future Claude extraction will send selected messages or images to Anthropic and require separate consent.</p>
+    <p>Paste and import extraction uses Groq only when a GROQ_API_KEY is configured: messages matching training keywords are then sent to Groq's servers for processing. Without a key, messages stay on this device in the review inbox. Demo data is fictional.</p>
     <label class="consent"><input id="consent" type="checkbox"> I understand that messages may contain other people's personal data.</label>
     <button id="privacy-continue" class="primary" disabled>Open workspace ${icon('arrow-right')}</button>
   </dialog>
@@ -140,8 +140,18 @@ async function reload() {
     render();
     return;
   }
-  [state.leads, state.reviews] = await Promise.all([invoke('list_leads'), invoke('list_reviews')]);
+  [state.leads, state.reviews, state.extraction] = await Promise.all([invoke('list_leads'), invoke('list_reviews'), invoke('extraction_status')]);
+  const note = document.querySelector('#extraction-note');
+  note.textContent = state.extraction.enabled ? `Extraction on / Groq ${state.extraction.model}` : 'Extraction off / add GROQ_API_KEY to .env';
+  note.classList.toggle('enabled', state.extraction.enabled);
+  document.querySelector('#submit-label').textContent = state.extraction.enabled ? 'Extract' : 'Save to inbox';
   render();
+}
+function summarize(report, noun) {
+  if (!report.found && !report.needs_review) return `No training requirement found / ${report.skipped} ${noun} skipped`;
+  const parts = [`Found ${report.found}: ${report.new} new, ${report.exact} exact repeat, ${report.similar} similar`];
+  if (report.needs_review) parts.push(`${report.needs_review} to review inbox`);
+  return parts.join(' / ');
 }
 async function action(work) {
   if (state.busy) return;
@@ -161,10 +171,10 @@ document.querySelector('#capture-form').addEventListener('submit', event => {
   action(async () => {
     const report = await invoke('capture_text', { text: document.querySelector('#message').value, group: document.querySelector('#group').value, export: false });
     document.querySelector('#message').value = '';
-    state.tab = 'inbox';
+    state.tab = report.found ? 'leads' : 'inbox';
     await reload();
     document.querySelector('main').scrollIntoView();
-    announce(`Saved ${report.needs_review} message to review inbox`);
+    announce(summarize(report, 'message'));
   });
 });
 document.querySelector('#upload').addEventListener('click', () => document.querySelector('#export-file').click());
@@ -174,10 +184,10 @@ document.querySelector('#export-file').addEventListener('change', event => {
   action(async () => {
     if (file.size > 2 * 1024 * 1024) throw new Error('Export must be at most 2 MiB');
     const report = await invoke('capture_text', { text: await file.text(), group: file.name.replace(/\.txt$/i, ''), export: true });
-    state.tab = 'inbox';
+    state.tab = report.found ? 'leads' : 'inbox';
     await reload();
     document.querySelector('main').scrollIntoView();
-    announce(`Imported ${report.needs_review} messages to review inbox`);
+    announce(summarize(report, 'messages'));
   }).finally(() => { event.target.value = ''; });
 });
 document.querySelector('#demo').addEventListener('click', () => action(async () => {
@@ -207,9 +217,9 @@ const dialog = document.querySelector('#privacy');
 document.querySelector('#consent').addEventListener('change', event => { document.querySelector('#privacy-continue').disabled = !event.target.checked; });
 dialog.addEventListener('cancel', event => event.preventDefault());
 document.querySelector('#privacy-continue').addEventListener('click', () => {
-  localStorage.setItem('trainlead-local-consent-v1', 'accepted');
+  localStorage.setItem('trainlead-local-consent-v2', 'accepted');
   dialog.close();
 });
-if (localStorage.getItem('trainlead-local-consent-v1') !== 'accepted') dialog.showModal();
+if (localStorage.getItem('trainlead-local-consent-v2') !== 'accepted') dialog.showModal();
 refreshIcons();
-reload().then(() => { if (native) announce('Ready / local capture only'); }).catch(error => announce(String(error), true));
+reload().then(() => { if (native) announce(state.extraction?.enabled ? 'Ready / Groq extraction on' : 'Ready / local capture only'); }).catch(error => announce(String(error), true));

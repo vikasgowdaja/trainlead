@@ -3,10 +3,36 @@ mod service;
 use std::path::PathBuf;
 
 use tauri::{Manager, State};
-use trainlead_core::models::{Cluster, IngestReport};
+use trainlead_core::{
+    extraction::GroqClient,
+    models::{Cluster, IngestReport},
+};
 
 struct AppState {
     database: PathBuf,
+    groq: Option<GroqClient>,
+    groq_error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ExtractionStatus {
+    enabled: bool,
+    provider: &'static str,
+    model: Option<String>,
+    detail: Option<String>,
+}
+
+#[tauri::command]
+fn extraction_status(state: State<'_, AppState>) -> ExtractionStatus {
+    ExtractionStatus {
+        enabled: state.groq.is_some(),
+        provider: "Groq",
+        model: state
+            .groq
+            .as_ref()
+            .map(|client| client.text_model().to_string()),
+        detail: state.groq_error.clone(),
+    }
 }
 
 #[tauri::command]
@@ -26,10 +52,13 @@ async fn capture_text(
     export: bool,
 ) -> Result<IngestReport, String> {
     let path = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || service::capture(&path, &text, &group, export))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    let groq = state.groq.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(service::capture(&path, &text, &group, export, groq))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -75,8 +104,20 @@ pub fn run() {
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
             std::fs::create_dir_all(&directory)?;
+            // Existing environment variables win; then the app-data .env, then a workspace .env (dev).
+            let _ = dotenvy::from_path(directory.join(".env"));
+            let _ = dotenvy::dotenv();
+            let (groq, groq_error) = match std::env::var("GROQ_API_KEY") {
+                Ok(key) if !key.trim().is_empty() => match GroqClient::from_env() {
+                    Ok(client) => (Some(client), None),
+                    Err(error) => (None, Some(error.to_string())),
+                },
+                _ => (None, Some("GROQ_API_KEY is not set".to_string())),
+            };
             app.manage(AppState {
                 database: directory.join("trainlead.db"),
+                groq,
+                groq_error,
             });
             Ok(())
         })
@@ -85,7 +126,8 @@ pub fn run() {
             capture_text,
             load_demo,
             review_count,
-            list_reviews
+            list_reviews,
+            extraction_status
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

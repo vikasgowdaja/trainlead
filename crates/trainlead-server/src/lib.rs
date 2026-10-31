@@ -1,1 +1,3 @@
+pub mod wati;
+
 pub fn api_version() -> &'static str { "v1" }

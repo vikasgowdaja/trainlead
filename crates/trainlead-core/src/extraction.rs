@@ -5,7 +5,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::NaiveDate;
 use reqwest::{
     Client, StatusCode,
-    header::{HeaderMap, HeaderValue, RETRY_AFTER},
+    header::{AUTHORIZATION, HeaderMap, HeaderValue, RETRY_AFTER},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -16,8 +16,11 @@ use crate::{
     source::Screenshot,
 };
 
-pub const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+pub const DEFAULT_TEXT_MODEL: &str = "llama-3.3-70b-versatile";
+pub const DEFAULT_VISION_MODEL: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
 pub const MAX_BATCH: usize = 8;
+const GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MAX_IMAGE_BASE64: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ExtractionRequest {
@@ -75,38 +78,61 @@ pub fn decode_output(text: &str, request: &ExtractionRequest) -> Result<Vec<Extr
     Ok(output.requirements)
 }
 
-pub struct AnthropicClient {
+const CORRECTION: &str = "Your previous response was invalid. Re-extract from the original inputs. Return only the exact JSON envelope and fields below; no markdown. Check dates, indexes, phone digits and enum spellings.";
+
+#[derive(Clone)]
+pub struct GroqClient {
     client: Client,
-    model: String,
+    text_model: String,
+    vision_model: String,
 }
 
-impl AnthropicClient {
+impl GroqClient {
     pub fn from_env() -> Result<Self> {
-        let key = env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| Error::Configuration("ANTHROPIC_API_KEY".into()))?;
-        let model = env::var("CLAUDE_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
-        Self::new(&key, model)
+        let key =
+            env::var("GROQ_API_KEY").map_err(|_| Error::Configuration("GROQ_API_KEY".into()))?;
+        Self::new(
+            &key,
+            env::var("GROQ_MODEL").ok(),
+            env::var("GROQ_VISION_MODEL").ok(),
+        )
     }
 
-    pub fn new(api_key: &str, model: String) -> Result<Self> {
-        if api_key.trim().is_empty() || model.trim().is_empty() {
-            return Err(Error::Configuration(
-                "API key and model must be nonempty".into(),
-            ));
+    pub fn new(
+        api_key: &str,
+        text_model: Option<String>,
+        vision_model: Option<String>,
+    ) -> Result<Self> {
+        if api_key.trim().is_empty() {
+            return Err(Error::Configuration("GROQ_API_KEY is empty".into()));
         }
-        let mut key = HeaderValue::from_str(api_key).map_err(|_| {
-            Error::Configuration("API key contains invalid header characters".into())
-        })?;
-        key.set_sensitive(true);
+        let pick = |value: Option<String>, default: &str| {
+            value
+                .map(|model| model.trim().to_string())
+                .filter(|model| !model.is_empty())
+                .unwrap_or_else(|| default.into())
+        };
+        let mut auth =
+            HeaderValue::from_str(&format!("Bearer {}", api_key.trim())).map_err(|_| {
+                Error::Configuration("GROQ_API_KEY contains invalid header characters".into())
+            })?;
+        auth.set_sensitive(true);
         let mut headers = HeaderMap::new();
-        headers.insert("x-api-key", key);
-        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        headers.insert(AUTHORIZATION, auth);
         let client = Client::builder()
             .default_headers(headers)
             .timeout(Duration::from_secs(90))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        Ok(Self { client, model })
+        Ok(Self {
+            client,
+            text_model: pick(text_model, DEFAULT_TEXT_MODEL),
+            vision_model: pick(vision_model, DEFAULT_VISION_MODEL),
+        })
+    }
+
+    pub fn text_model(&self) -> &str {
+        &self.text_model
     }
 
     fn body(&self, request: &ExtractionRequest) -> Result<Value> {
@@ -115,52 +141,73 @@ impl AnthropicClient {
                 "LLM batch must contain 1-8 messages".into(),
             ));
         }
-        let mut content = Vec::new();
-        if let Some(screenshot) = &request.screenshot {
+        let messages = serde_json::to_string(&request.messages)?;
+        let (model, content) = if let Some(screenshot) = &request.screenshot {
             screenshot.validate()?;
-            content.push(json!({"type": "image", "source": {
-                "type": "base64", "media_type": screenshot.media_type,
-                "data": STANDARD.encode(&screenshot.bytes),
-            }}));
-        }
-        content.push(json!({"type": "text", "text": serde_json::to_string(&request.messages)?}));
-        if request.correction {
-            content.push(json!({"type": "text", "text":
-                "Your previous response was invalid. Re-extract from the original inputs. Return only the exact JSON envelope and fields below; no markdown. Check dates, indexes, phone digits and enum spellings."}));
-        }
+            let data = STANDARD.encode(&screenshot.bytes);
+            if data.len() > GROQ_MAX_IMAGE_BASE64 {
+                return Err(Error::Validation(
+                    "screenshot exceeds Groq's 4 MB base64 image limit".into(),
+                ));
+            }
+            let mut parts = vec![
+                json!({"type": "image_url", "image_url": {"url": format!("data:{};base64,{data}", screenshot.media_type)}}),
+                json!({"type": "text", "text": messages}),
+            ];
+            if request.correction {
+                parts.push(json!({"type": "text", "text": CORRECTION}));
+            }
+            (&self.vision_model, Value::Array(parts))
+        } else if request.correction {
+            (
+                &self.text_model,
+                Value::String(format!("{messages}\n\n{CORRECTION}")),
+            )
+        } else {
+            (&self.text_model, Value::String(messages))
+        };
         Ok(json!({
-            "model": self.model, "max_tokens": 8192,
-            "system": system_prompt(request.today, request.screenshot.is_some()),
-            "messages": [{"role": "user", "content": content}],
+            "model": model, "temperature": 0, "max_completion_tokens": 8192,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt(request.today, request.screenshot.is_some())},
+                {"role": "user", "content": content},
+            ],
         }))
     }
 }
 
 #[derive(Deserialize)]
-struct ApiResponse {
-    content: Vec<ApiBlock>,
-    stop_reason: Option<String>,
+struct ChatResponse {
+    choices: Vec<ChatChoice>,
 }
 
 #[derive(Deserialize)]
-struct ApiBlock {
-    #[serde(rename = "type")]
-    kind: String,
-    text: Option<String>,
+struct ChatChoice {
+    message: ChatMessage,
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChatMessage {
+    content: Option<String>,
 }
 
 #[async_trait]
-impl LlmClient for AnthropicClient {
+impl LlmClient for GroqClient {
     async fn extract(&self, request: &ExtractionRequest) -> Result<String> {
         let body = self.body(request)?;
         for attempt in 0..=3 {
-            let response = self
-                .client
-                .post("https://api.anthropic.com/v1/messages")
-                .json(&body)
-                .send()
-                .await?;
+            let response = self.client.post(GROQ_URL).json(&body).send().await?;
             let status = response.status();
+            // Groq rejects model output that fails JSON mode; treat it as invalid output so it is re-asked.
+            if status == StatusCode::BAD_REQUEST {
+                let text = response.text().await?;
+                if text.contains("json_validate_failed") {
+                    return Ok(String::new());
+                }
+                return Err(Error::ApiStatus(status.as_u16()));
+            }
             if retryable_status(status) && attempt < 3 {
                 let retry_after = response
                     .headers()
@@ -179,17 +226,14 @@ impl LlmClient for AnthropicClient {
             if !status.is_success() {
                 return Err(Error::ApiStatus(status.as_u16()));
             }
-            let response: ApiResponse = response.json().await?;
-            if response.stop_reason.as_deref() == Some("max_tokens") {
+            let response: ChatResponse = response.json().await?;
+            let Some(choice) = response.choices.into_iter().next() else {
+                return Ok(String::new());
+            };
+            if choice.finish_reason.as_deref() == Some("length") {
                 return Ok(String::new());
             }
-            return Ok(response
-                .content
-                .into_iter()
-                .filter(|block| block.kind == "text")
-                .filter_map(|block| block.text)
-                .collect::<Vec<_>>()
-                .join(""));
+            return Ok(choice.message.content.unwrap_or_default());
         }
         Err(Error::Validation(
             "extraction retry budget exhausted".into(),
@@ -242,5 +286,68 @@ mod tests {
         assert_eq!(retry_delay(0, None).as_secs(), 1);
         assert_eq!(retry_delay(2, None).as_secs(), 4);
         assert_eq!(retry_delay(0, Some(120)).as_secs(), 60);
+    }
+
+    fn request(screenshot: Option<Screenshot>, correction: bool) -> ExtractionRequest {
+        let message = Message {
+            source_group: "Vendors".into(),
+            sender: None,
+            timestamp: "2026-11-01T09:00:00".into(),
+            raw_text: "Training AngularJS".into(),
+        };
+        ExtractionRequest {
+            today: NaiveDate::from_ymd_opt(2026, 11, 1).unwrap_or_default(),
+            messages: vec![message],
+            screenshot,
+            correction,
+        }
+    }
+
+    #[test]
+    fn groq_text_requests_use_json_mode_text_model_and_prompt() -> Result<()> {
+        let client = GroqClient::new("gsk_test", None, None)?;
+        let body = client.body(&request(None, true))?;
+        assert_eq!(body["model"], DEFAULT_TEXT_MODEL);
+        assert_eq!(body["response_format"]["type"], "json_object");
+        assert_eq!(body["temperature"], 0);
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("Today is 2026-11-01"))
+        );
+        let user = body["messages"][1]["content"].as_str().unwrap_or_default();
+        assert!(
+            user.contains("Training AngularJS") && user.contains("previous response was invalid")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn groq_screenshots_use_vision_model_and_data_url() -> Result<()> {
+        let client = GroqClient::new("gsk_test", Some("text-x".into()), Some(" vision-y ".into()))?;
+        let screenshot = Screenshot {
+            message: request(None, false).messages.remove(0),
+            media_type: "image/png".into(),
+            bytes: vec![1, 2, 3],
+        };
+        let body = client.body(&request(Some(screenshot), false))?;
+        assert_eq!(body["model"], "vision-y");
+        assert_eq!(
+            body["messages"][1]["content"][0]["image_url"]["url"],
+            "data:image/png;base64,AQID"
+        );
+        assert_eq!(client.text_model(), "text-x");
+        Ok(())
+    }
+
+    #[test]
+    fn groq_rejects_blank_keys_and_oversized_batches() -> Result<()> {
+        assert!(GroqClient::new("  ", None, None).is_err());
+        let client = GroqClient::new("gsk_test", Some("  ".into()), None)?;
+        assert_eq!(client.text_model(), DEFAULT_TEXT_MODEL);
+        let mut oversized = request(None, false);
+        oversized.messages = vec![oversized.messages[0].clone(); MAX_BATCH + 1];
+        assert!(client.body(&oversized).is_err());
+        Ok(())
     }
 }

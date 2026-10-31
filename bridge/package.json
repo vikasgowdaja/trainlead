@@ -1,1 +1,7 @@
-{"name":"trainlead-bridge","type":"module","private":true,"dependencies":{"@whiskeysockets/baileys":"^6.7.0","qrcode-terminal":"^0.12.0"}}
+{
+	"name": "trainlead-bridge",
+	"type": "module",
+	"private": true,
+	"scripts": { "test": "node --test", "start": "node index.js" },
+	"dependencies": { "@whiskeysockets/baileys": "^6.7.0", "qrcode": "^1.5.4", "pino": "^9" }
+}

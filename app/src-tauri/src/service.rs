@@ -21,7 +21,13 @@ pub fn open(path: &Path) -> Result<Store> {
     Store::open(path, DedupThresholds::default())
 }
 
-pub fn capture(path: &Path, text: &str, group: &str, export: bool) -> Result<IngestReport> {
+pub async fn capture<L: LlmClient>(
+    path: &Path,
+    text: &str,
+    group: &str,
+    export: bool,
+    llm: Option<L>,
+) -> Result<IngestReport> {
     if text.trim().is_empty() || text.len() > 2 * 1024 * 1024 {
         return Err(Error::Validation(
             "input must contain text and be at most 2 MiB".into(),
@@ -47,16 +53,45 @@ pub fn capture(path: &Path, text: &str, group: &str, export: bool) -> Result<Ing
         return Err(Error::Validation("no messages found in export".into()));
     }
     let mut store = open(path)?;
-    let ids = store.record_messages(&messages)?;
-    store.mark_messages(
-        &ids,
-        "needs_review",
-        Some("Live extraction is not configured in this emulator shell"),
-    )?;
-    Ok(IngestReport {
-        needs_review: ids.len(),
-        ..Default::default()
-    })
+    let Some(llm) = llm else {
+        let ids = store.record_messages(&messages)?;
+        store.mark_messages(
+            &ids,
+            "needs_review",
+            Some("Extraction is off: add GROQ_API_KEY to .env and restart TrainLead"),
+        )?;
+        return Ok(IngestReport {
+            needs_review: ids.len(),
+            ..Default::default()
+        });
+    };
+    let result = Pipeline::new(llm)?
+        .ingest(
+            SourceBatch::Messages(messages),
+            &mut store,
+            Local::now().date_naive(),
+        )
+        .await;
+    match result {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            // Keep messages the pipeline left pending so a Groq outage never loses them.
+            let pending: Vec<i64> = store
+                .messages_by_status("pending")?
+                .into_iter()
+                .map(|message| message.id)
+                .collect();
+            store.mark_messages(
+                &pending,
+                "needs_review",
+                Some(&format!("Groq extraction failed: {error}")),
+            )?;
+            Ok(IngestReport {
+                needs_review: pending.len(),
+                ..Default::default()
+            })
+        }
+    }
 }
 
 pub async fn load_demo(path: &Path) -> Result<IngestReport> {
@@ -169,12 +204,60 @@ mod tests {
     #[test]
     fn local_capture_is_durable_and_does_not_claim_extraction() -> Result<()> {
         let path = database();
-        let report = capture(&path, "Training AngularJS", "Vendors", false)?;
+        let report = tauri::async_runtime::block_on(capture(
+            &path,
+            "Training AngularJS",
+            "Vendors",
+            false,
+            None::<DemoLlm>,
+        ))?;
         assert_eq!((report.found, report.needs_review), (0, 1));
         {
             let store = open(&path)?;
-            assert_eq!(store.messages_by_status("needs_review")?.len(), 1);
+            let review = store.messages_by_status("needs_review")?;
+            assert_eq!(review.len(), 1);
+            assert!(
+                review[0]
+                    .review_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("GROQ_API_KEY"))
+            );
             assert!(store.clusters()?.is_empty());
+        }
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    struct OfflineLlm;
+
+    #[async_trait]
+    impl LlmClient for OfflineLlm {
+        async fn extract(&self, _: &ExtractionRequest) -> Result<String> {
+            Err(Error::ApiStatus(503))
+        }
+    }
+
+    #[test]
+    fn failed_groq_call_moves_messages_to_review_instead_of_losing_them() -> Result<()> {
+        let path = database();
+        let report = tauri::async_runtime::block_on(capture(
+            &path,
+            "Training requirement AngularJS Mysuru",
+            "Vendors",
+            false,
+            Some(OfflineLlm),
+        ))?;
+        assert_eq!((report.found, report.needs_review), (0, 1));
+        {
+            let store = open(&path)?;
+            assert!(store.messages_by_status("pending")?.is_empty());
+            let review = store.messages_by_status("needs_review")?;
+            assert!(
+                review[0]
+                    .review_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.starts_with("Groq extraction failed"))
+            );
         }
         std::fs::remove_file(path)?;
         Ok(())
