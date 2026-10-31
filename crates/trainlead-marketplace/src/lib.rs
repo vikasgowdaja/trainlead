@@ -2,6 +2,7 @@ pub mod audit;
 pub mod auth;
 pub mod clock;
 pub mod db;
+pub mod ecosystem;
 mod password;
 mod sessions;
 
@@ -25,6 +26,12 @@ pub enum Error {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("cryptographic operation failed")]
     Crypto,
+    #[error("not found")]
+    NotFound,
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("serialization failed")]
+    Json(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

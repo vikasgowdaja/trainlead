@@ -206,6 +206,54 @@ The Android WebView smoke test checks the actual native IPC, demo cluster cards,
 repeat/search filters, local capture and mobile width; it writes a generated
 screenshot to app/.smoke/android-light.png. Browser checks cover consent and themes.
 
+## Ecosystem Layer (E1-E8)
+
+One real-world training need is one **Opportunity**; every vendor, WhatsApp group or
+sender that posts it adds a **Posting**; the hand-offs form a **chain of custody**
+(client -> vendor A -> vendor B -> trainer) with a rate on each hop. Code lives in
+`crates/trainlead-marketplace/src/ecosystem/`, schema in `migrations/0002_*.sql`.
+
+| Milestone | Status |
+| --- | --- |
+| E1 Opportunity/Posting/Chain, cluster import, merge/unmerge, client resolution | Implemented |
+| E2-E8 trainer side, sourcing, engagements, delivery, settlement, reputation, docs | Planned |
+
+E1 behavior:
+- `ingest::import_clusters` turns each dedup cluster into an opportunity (status
+  `Detected`) and each sighting into a posting. Re-importing is idempotent. A sender
+  whose phone is a registered vendor contact maps to that vendor organization;
+  everyone else becomes an external contact.
+- The chain is **inferred** from posting order: client (or "unknown client") ->
+  first poster -> next poster. Each inferred hop carries the upstream poster's
+  advertised rate and is flagged `inferred`. Vendors add explicit hops with
+  `chain::add_link` (re-post to a vendor, or offer to a trainer with the rate disclosed).
+- Opportunity lifecycle `Detected -> Verified -> Open -> Sourcing -> Staffed ->
+  InDelivery -> Completed -> Settled | Cancelled | Expired` is enforced in code
+  (`Staffed -> Sourcing` is allowed when a trainer drops out). Every change is in the
+  append-only `object_events` log.
+- Merge moves every posting and chain hop to the target and records exactly what moved;
+  unmerge restores it. Hops identical to one already on the target stay with the source.
+  Unmerge must happen in reverse order of later merges.
+- Client resolution: exact alias (after normalizing spellings such as Mysore/Mysuru,
+  Engg/Engineering) is confirmed; a close fuzzy match is only **suggested** and an admin
+  confirms or rejects it; a mismatched city never matches. Confirming adds the
+  college text as a new alias.
+
+Visibility rules implemented so far (`views::opportunity_view`; full matrix in E8):
+
+| Viewer | Canonical fields | Postings | Chain hops | Rates |
+| --- | --- | --- | --- | --- |
+| Admin | yes | all, with contacts | all | all; each rate/contact read is audited |
+| Vendor (involved) | yes | only its own; others as a count | hops it pays or receives | hops it pays; received hop only if disclosed |
+| Trainer (offered) | yes, incl. logistics | none | only offers to them | their offered rate (audited) |
+| Anyone else | no (403, audited) | no | no | no |
+
+E1 assumptions: WhatsApp export timestamps without an offset are treated as IST and
+stored as UTC; rates are parsed best-effort from text (`8k per day`, `1.5L total`),
+with an unknown unit when none is written; opportunity confidence is the primary
+sighting's field completeness (0-1). Vendor organizations and trainers have minimal
+tables now; onboarding (M8/M9) extends them.
+
 ## Legacy Prototype Reference
 
 The following historical commands are not the Rust app's run/build instructions.

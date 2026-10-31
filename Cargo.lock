@@ -4769,9 +4769,11 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "strsim",
  "subtle",
  "thiserror 2.0.21",
  "tokio",
+ "trainlead-core",
  "utoipa",
  "uuid",
 ]
