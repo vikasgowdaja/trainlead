@@ -2,14 +2,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { createIcons, Sun, Moon, Search, Upload, Inbox, Layers,
   FlaskConical, Save, MapPin, CalendarDays, Phone, MessageCircle, Check, Minus,
   CircleHelp, ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight, KeyRound, RotateCw, Building2, GraduationCap, Plus,
-  CircleCheck, Circle, FileText, Trash2, BadgeCheck, X, Send, TriangleAlert, UserPlus, Pencil } from 'lucide';
+  CircleCheck, Circle, FileText, Trash2, BadgeCheck, X, Send, TriangleAlert, UserPlus, Pencil, Download, Bell } from 'lucide';
 import { createDirectory } from './directory.js';
 import './style.css';
 
 const icons = { Sun, Moon, Search, Upload, Inbox, Layers, FlaskConical,
   Save, MapPin, CalendarDays, Phone, MessageCircle, Check, Minus, CircleHelp,
   ArrowUpDown, RefreshCw, ShieldCheck, ArrowRight, KeyRound, RotateCw, Building2, GraduationCap, Plus,
-  CircleCheck, Circle, FileText, Trash2, BadgeCheck, X, Send, TriangleAlert, UserPlus, Pencil };
+  CircleCheck, Circle, FileText, Trash2, BadgeCheck, X, Send, TriangleAlert, UserPlus, Pencil, Download, Bell };
 const state = { leads: [], reviews: [], tab: 'leads', busy: false };
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -36,6 +36,15 @@ document.querySelector('#app').innerHTML = `
           <button type="button" id="upload" class="icon-button" title="Import chat export (.txt)" aria-label="Import chat export">${icon('upload')}</button></div>
         <input id="export-file" type="file" accept=".txt,text/plain" hidden>
       </form>
+      <section id="whatsapp-panel" class="whatsapp-panel" aria-labelledby="whatsapp-title" hidden>
+        <div class="section-title"><h2 id="whatsapp-title">WhatsApp</h2><span id="whatsapp-access" class="offline-dot">Off</span></div>
+        <p id="whatsapp-note" class="whatsapp-note"></p>
+        <button type="button" id="whatsapp-import" class="primary">${icon('download')} <span>Import from notifications</span></button>
+        <div class="whatsapp-actions">
+          <button type="button" id="whatsapp-access-button" class="secondary">${icon('bell')} Allow access</button>
+          <button type="button" id="whatsapp-open" class="secondary">${icon('message-circle')} Open WhatsApp</button>
+        </div>
+      </section>
       <button type="button" id="ai-settings" class="ai-status">${icon('key-round')}<span id="extraction-note">AI extraction off</span></button>
       <div class="divider"></div>
       <button id="demo" class="secondary">${icon('flask-conical')} Load demo</button>
@@ -65,6 +74,7 @@ document.querySelector('#app').innerHTML = `
     <h2 id="privacy-title">Your messages stay here.</h2>
     <p>This preview stores group messages, vendor details and phone numbers on this device in an unencrypted SQLite database. No telemetry.</p>
     <p>Pasted and imported messages are read on this device by TrainLead's built-in rules. If you add a Groq API key in AI extraction settings, messages matching training keywords are instead sent to Groq's servers for better results. Demo data is fictional.</p>
+    <p>On Android, if you allow notification access, TrainLead reads WhatsApp message notifications (groups and chats) and keeps them on this phone until imported. Other apps' notifications are ignored.</p>
     <label class="consent"><input id="consent" type="checkbox"> I understand that messages may contain other people's personal data.</label>
     <button id="privacy-continue" class="primary" disabled>Open workspace ${icon('arrow-right')}</button>
   </dialog>
@@ -95,7 +105,7 @@ function announce(message, error = false) {
 }
 function setBusy(busy) {
   state.busy = busy;
-  document.querySelectorAll('#capture-form button, #demo, #refresh, #retry-all, [data-retry]').forEach(button => { button.disabled = busy; });
+  document.querySelectorAll('#capture-form button, #demo, #refresh, #retry-all, [data-retry], #whatsapp-import').forEach(button => { button.disabled = busy; });
 }
 function formatDate(value) {
   if (!value) return 'Dates pending';
@@ -327,5 +337,62 @@ document.querySelector('#privacy-continue').addEventListener('click', () => {
   dialog.close();
 });
 if (localStorage.getItem('trainlead-local-consent-v2') !== 'accepted') dialog.showModal();
+
+// Present only in the Android app: WhatsApp notifications queued by the notification listener.
+const android = window.TrainLeadAndroid;
+function showWhatsAppState() {
+  if (!android) return false;
+  const granted = android.isAccessGranted();
+  const waiting = android.pending();
+  document.querySelector('#whatsapp-panel').hidden = false;
+  const access = document.querySelector('#whatsapp-access');
+  access.textContent = granted ? 'Listening' : 'Off';
+  access.classList.toggle('on', granted);
+  document.querySelector('#whatsapp-access-button').hidden = granted;
+  document.querySelector('#whatsapp-note').textContent = granted
+    ? `${waiting ? `${waiting} new messages waiting.` : 'No new messages waiting.'} New WhatsApp messages are collected from notifications and imported when you open TrainLead.`
+    : 'Allow notification access so TrainLead can collect WhatsApp group messages as they arrive.';
+  return granted;
+}
+async function importWhatsApp(quiet = false) {
+  if (!showWhatsAppState()) {
+    if (!quiet) announce('Allow notification access first', true);
+    return;
+  }
+  const total = { found: 0, new: 0, exact: 0, similar: 0, needs_review: 0, skipped: 0 };
+  let imported = 0;
+  let engine = '';
+  for (let round = 0; round < 50; round += 1) {
+    const messages = JSON.parse(android.peek(200));
+    if (!messages.length) break;
+    const report = await invoke('import_notifications', { messages });
+    android.ack(messages.length);
+    imported += messages.length;
+    engine = report.engine;
+    for (const key of Object.keys(total)) total[key] += report[key] || 0;
+  }
+  showWhatsAppState();
+  if (!imported) {
+    if (!quiet) announce('No new WhatsApp messages. Messages arrive here as notifications.');
+    return;
+  }
+  if (total.found) state.tab = 'leads';
+  await reload();
+  announce(`WhatsApp: ${imported} messages / ${summarize({ ...total, engine }, 'messages')}`);
+}
+if (android) {
+  document.querySelector('#whatsapp-import').addEventListener('click', () => action(() => importWhatsApp()));
+  document.querySelector('#whatsapp-access-button').addEventListener('click', () => android.openAccessSettings());
+  document.querySelector('#whatsapp-open').addEventListener('click', () => {
+    if (!android.openWhatsApp()) announce('WhatsApp is not installed on this phone', true);
+  });
+  // Returning from WhatsApp or settings imports whatever arrived meanwhile.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') action(() => importWhatsApp(true));
+  });
+}
 refreshIcons();
-reload().then(() => { if (native) announce(state.extraction?.enabled ? 'Ready / extraction with Groq' : 'Ready / extraction on this device'); }).catch(error => announce(String(error), true));
+reload()
+  .then(() => { if (native) announce(state.extraction?.enabled ? 'Ready / extraction with Groq' : 'Ready / extraction on this device'); })
+  .then(() => { if (android) return action(() => importWhatsApp(true)); })
+  .catch(error => announce(String(error), true));

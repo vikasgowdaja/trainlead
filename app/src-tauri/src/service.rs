@@ -67,6 +67,64 @@ pub async fn capture<L: LlmClient>(
     park_on_failure(&mut store, result)
 }
 
+/// A WhatsApp message captured from an Android notification.
+#[derive(Debug, serde::Deserialize)]
+pub struct NotificationMessage {
+    pub group: String,
+    pub sender: Option<String>,
+    /// Milliseconds since the Unix epoch.
+    pub timestamp: i64,
+    pub text: String,
+}
+
+pub const MAX_NOTIFICATION_BATCH: usize = 200;
+
+pub async fn capture_notifications<L: LlmClient>(
+    path: &Path,
+    notifications: Vec<NotificationMessage>,
+    llm: L,
+) -> Result<IngestReport> {
+    if notifications.len() > MAX_NOTIFICATION_BATCH {
+        return Err(Error::Validation(format!(
+            "import at most {MAX_NOTIFICATION_BATCH} notifications at a time"
+        )));
+    }
+    let messages: Vec<Message> = notifications
+        .into_iter()
+        .filter_map(|notification| {
+            let text = notification.text.trim();
+            let group = notification.group.trim();
+            if text.is_empty() || text.len() > 64 * 1024 || group.is_empty() || group.len() > 200 {
+                return None;
+            }
+            let timestamp = chrono::DateTime::from_timestamp_millis(notification.timestamp)
+                .map(|time| time.with_timezone(&Local).to_rfc3339())
+                .unwrap_or_else(|| Local::now().to_rfc3339());
+            Some(Message {
+                source_group: group.into(),
+                sender: notification
+                    .sender
+                    .map(|sender| sender.trim().chars().take(200).collect::<String>())
+                    .filter(|sender| !sender.is_empty()),
+                timestamp,
+                raw_text: text.into(),
+            })
+        })
+        .collect();
+    if messages.is_empty() {
+        return Ok(IngestReport::default());
+    }
+    let mut store = open(path)?;
+    let result = Pipeline::new(llm)?
+        .ingest(
+            SourceBatch::Messages(messages),
+            &mut store,
+            Local::now().date_naive(),
+        )
+        .await;
+    park_on_failure(&mut store, result)
+}
+
 /// Re-extracts review-inbox messages (all of them when `ids` is None) without duplicating them.
 pub async fn retry<L: LlmClient>(path: &Path, ids: Option<Vec<i64>>, llm: L) -> Result<IngestReport> {
     let mut store = open(path)?;
@@ -264,6 +322,42 @@ mod tests {
             assert!(store.messages_by_status("needs_review")?.is_empty());
             assert_eq!(store.clusters()?[0].primary.requirement.city.as_deref(), Some("Mysuru"));
         }
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn notification_messages_keep_group_sender_and_time_and_skip_chatter() -> Result<()> {
+        let path = database();
+        let rules = std::sync::Arc::new(trainlead_core::rules::RuleExtractor::new()?);
+        let extractor = std::sync::Arc::new(trainlead_core::rules::FallbackExtractor::<DemoLlm>::new(None, rules));
+        let note = |group: &str, sender: Option<&str>, text: &str| NotificationMessage {
+            group: group.into(),
+            sender: sender.map(Into::into),
+            timestamp: 1_793_500_000_000,
+            text: text.into(),
+        };
+        let report = tauri::async_runtime::block_on(capture_notifications(
+            &path,
+            vec![
+                note("Trainer Network", Some("Asha"), "Training requirement: AngularJS, Mysuru, 2-7 Nov, TFA provided"),
+                note("Trainer Network", Some("Ravi"), "Good morning all"),
+                note("  ", None, "ignored: no group"),
+            ],
+            extractor,
+        ))?;
+        assert_eq!(report.found, 1);
+        {
+            let clusters = open(&path)?.clusters()?;
+            let source = &clusters[0].sources[0].message;
+            assert_eq!(source.source_group, "Trainer Network");
+            assert_eq!(source.sender.as_deref(), Some("Asha"));
+            assert!(source.timestamp.starts_with("2026-11-0"));
+        }
+        let too_many = (0..=MAX_NOTIFICATION_BATCH).map(|_| note("G", None, "x")).collect();
+        let rules = std::sync::Arc::new(trainlead_core::rules::RuleExtractor::new()?);
+        let extractor = std::sync::Arc::new(trainlead_core::rules::FallbackExtractor::<DemoLlm>::new(None, rules));
+        assert!(tauri::async_runtime::block_on(capture_notifications(&path, too_many, extractor)).is_err());
         std::fs::remove_file(path)?;
         Ok(())
     }

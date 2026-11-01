@@ -239,6 +239,23 @@ async fn capture_text(
 }
 
 #[tauri::command]
+async fn import_notifications(
+    state: State<'_, AppState>,
+    messages: Vec<service::NotificationMessage>,
+) -> Result<ExtractionResult, String> {
+    let path = state.database.clone();
+    let extractor = extractor(&state)?;
+    let engine = extractor.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(service::capture_notifications(&path, messages, extractor))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(message)?;
+    Ok(ExtractionResult { report, engine: engine.engine() })
+}
+
+#[tauri::command]
 async fn load_demo(state: State<'_, AppState>) -> Result<IngestReport, String> {
     let path = state.database.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -295,6 +312,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_leads,
             capture_text,
+            import_notifications,
             load_demo,
             review_count,
             list_reviews,

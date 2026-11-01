@@ -45,6 +45,14 @@ form input:not([type="file"]), textarea { width: 100%; margin-bottom: 18px; }
 textarea { resize: vertical; min-height: 130px; line-height: 1.6; }
 .capture-actions { display: flex; gap: 8px; }
 .capture-actions .primary { flex: 1; }
+.whatsapp-panel { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.whatsapp-note { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 0 0 12px; }
+.whatsapp-panel .primary { width: 100%; }
+.whatsapp-actions { display: flex; gap: 8px; margin-top: 8px; }
+.whatsapp-actions button { flex: 1; font-size: 11px; }
+.whatsapp-actions button[hidden] { display: none; }
+.offline-dot.on { color: var(--accent); }
+.offline-dot.on::before { background: var(--accent); }
 .primary { color: var(--paper); background: var(--accent); border-color: var(--accent); }
 .secondary { width: 100%; }
 .state-note { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 12px 0; }
