@@ -231,6 +231,23 @@ The Android WebView smoke test checks the actual native IPC, demo cluster cards,
 repeat/search filters, local capture and mobile width; it writes a generated
 screenshot to app/.smoke/android-light.png. Browser checks cover consent and themes.
 
+## WhatsApp Notification Import (Android)
+
+`WhatsAppListener` (in `app/src-tauri/gen/android/.../mobile/`) is a notification
+listener. After the user grants notification access, it copies WhatsApp and WhatsApp
+Business message notifications into a private queue (`files/whatsapp-queue.jsonl`).
+It de-duplicates WhatsApp's repeated conversation notifications. The app imports the
+queue through `import_notifications` when it opens, when it returns to the foreground,
+or when **Import from notifications** is tapped. Queue entries are removed only after
+they are saved.
+
+Limits: only messages that produce a notification are seen. That excludes muted
+groups, chats open on screen, WhatsApp Web, and history from before access was
+granted (use a chat export for that). Long messages may be cut short by WhatsApp. On
+Android 13+, a sideloaded APK may need App info > menu > *Allow restricted settings*
+before access can be turned on.
+Build for a phone with `app/scripts/install-phone.ps1`.
+
 ## Vendor And Trainer Onboarding (in the app)
 
 The **Vendors** and **Trainers** tabs keep a local directory in `directory.db` in
